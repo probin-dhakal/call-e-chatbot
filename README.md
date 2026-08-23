@@ -1,141 +1,138 @@
-
-CALL.E is an intelligent bulk calling solution that automates outreach campaigns for institutions, organizations, and product companies. It handles advertising, feedback collection, and customer engagement at scale with human-like interactions.
+CALL.E is a platform for creating and chatting with AI knowledge agents. An organization signs up, creates an agent (name, role, purpose, organization info), and uploads its PDFs — those documents are chunked and embedded into a private, per-agent knowledge base. Anyone can then browse active agents and ask them questions; every answer is grounded strictly in that agent's retrieved knowledge, never the model's general knowledge.
 
 ---
-![image](https://github.com/user-attachments/assets/8f14ab67-56be-45de-af0d-4fd2db65c526)
-![image](https://github.com/user-attachments/assets/44ad71c6-f46f-41d6-a51a-4f6c59b0a386)
 
 ## 🌟 Key Features
-- **📞 Bulk Call Processing:** Simultaneously manage thousands of calls
-- **🧠 Context-Aware Conversations:** Powered by Gemini API (replacing Llama-3.3-70B)
-- **🎙️ Real-time Speech Processing:** Google Cloud Text-to-Speech (TTS) and Speech-to-Text (STT) APIs
-- **🔍 Smart Retrieval (RAG):** Pinecone vector store with Hugging Face embeddings
-- **📊 Performance Tracking:** WandB-integrated monitoring and optimization
-- **🧩 Dynamic Chunking:** Context-aware text processing with overlap
+- **📚 Per-agent knowledge base:** Upload PDFs, they're chunked and embedded into an isolated FAISS index — one agent's knowledge never leaks into another's
+- **🎯 Strictly grounded answers:** The agent answers only from retrieved knowledge + its configured organization info, explicitly says when the knowledge base doesn't cover something, and never fabricates facts (dates, IDs, contact info, procedures) to fill a gap
+- **💬 Real-time chat UI:** Text conversation with a typewriter reveal, no mic/voice required
+- **🏢 Multi-tenant by design:** Any number of organizations, each with any number of agents, each with its own isolated documents and conversations
+- **📊 Organization dashboard:** Manage agents, documents, and review past conversations with auto-generated summaries
 
 ---
-![image](https://github.com/user-attachments/assets/1dfa1429-e12a-45f5-904e-1e3871c26122)
 
 ## 🛠️ Tech Stack
-| Component        | Technology                        |
-|-----------------|--------------------------------|
-| **LLM Backbone** | Gemini API (Google)             |
-| **Speech Processing** | Google Cloud TTS/STT            |
-| **Vector Store** | Pinecone                        |
-| **Embeddings** | Hugging Face (sentence-transformers) |
-| **MLOps** | WandB                            |
-| **Framework** | LangChain                        |
+| Layer                 | Technology                                                        |
+|------------------------|--------------------------------------------------------------------|
+| **Frontend**           | React 18 + Vite, Tailwind CSS v4, Framer Motion                    |
+| **Backend**            | Flask (Python), served by Gunicorn in production                   |
+| **Database**           | PostgreSQL (Supabase)                                              |
+| **File storage**       | Supabase Storage (private bucket for uploaded PDFs)                |
+| **LLM**                | Google Gemini, via the `google-genai` SDK directly (no LangChain)  |
+| **Embeddings**         | `BAAI/bge-base-en-v1.5` via `sentence-transformers`                |
+| **Vector search**      | FAISS (`IndexFlatIP`), one index per agent                         |
+| **Session cache**      | Upstash Redis — holds the active conversation, not Postgres        |
+
+---
+
+## 🧠 How a Chat Works
+```mermaid
+graph TD
+A[User asks a question] --> B[Redis GET: load conversation session]
+B --> C[BGE: embed the question]
+C --> D[FAISS: search this agent's index]
+D -->|below relevance threshold| E[Refuse — outside this agent's knowledge]
+D -->|relevant| F[Gemini: answer using retrieved chunks + org info only]
+F --> G[Redis SET: append turn, refresh TTL]
+G --> H[Reply streamed back to the browser]
+```
+
+Postgres is the permanent record, but it's deliberately **not** touched during an active chat — the conversation lives entirely in Redis from `/start` until `/end`, at which point its full history and an auto-generated summary are persisted and the Redis key is cleared. This keeps `/message` fast: no Postgres round-trips on the hot path.
+
+Key endpoints (see `backend/routes/`):
+- `POST /api/conversations` — start a new conversation with an agent
+- `POST /api/conversations/<id>/start` — get the agent's opening line, builds the Redis session
+- `POST /api/conversations/<id>/message` — ask a question, get a grounded answer
+- `POST /api/conversations/<id>/end` — end the chat, persist it to Postgres
+- `POST /api/documents/upload` — upload PDFs for an agent (JWT-authenticated)
+- `GET /api/agents/public` — browse active agents (no account needed)
 
 ---
 
 ## 🚀 Getting Started
-### Prerequisites
-- Python 3.9+
-- Gemini API Key
-- Pinecone API Key
-- WandB Account
 
-![image](https://github.com/user-attachments/assets/fd6c6528-ffc7-4a4d-87be-de2c1f4927f5)
+### Prerequisites
+- Python 3.12+
+- Node.js 18+
+- A [Google Gemini API key](https://aistudio.google.com/apikey)
+- A [Supabase](https://supabase.com/) project (Postgres + Storage)
+- An [Upstash Redis](https://upstash.com/) database (REST API)
 
 ### Installation
 ```bash
 # Clone repository
 git clone https://github.com/yourusername/CALL.E.git
+cd CALL.E
 
 # Backend setup
 cd backend
+python3 -m venv venv
+source venv/bin/activate      # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 
-# Frontend Setup
+# Frontend setup
 cd ../frontend
 npm install
 ```
 
 ### ⚙️ Configuration
-Create a `.env` file and add the following keys:
+In `backend/`, copy `.env.example` to `.env` and fill in your keys:
 ```sh
-GEMINI_API_KEY=your_gemini_key
-PINECONE_API_KEY=your_pinecone_key
-WANDB_API_KEY=your_wandb_key
-INDEX_NAME=your_index_name
+cp .env.example .env
 ```
+See `.env.example` for the full list (Gemini, Supabase, Upstash Redis, JWT secret, RAG tuning) and what each one is for.
 
----
+### ▶️ Running it
+```bash
+# Terminal 1 — backend (http://127.0.0.1:5000)
+cd backend
+source venv/bin/activate
+python app.py
 
-## 🧠 Intelligent Pipeline
-```mermaid
-graph TD
-A[Speech Input] --> B(STT Conversion)
-B --> C{Intent Recognition}
-C -->|Query| D[RAG Retrieval]
-C -->|Command| E[Tool Execution]
-D --> F[LLM Processing]
-E --> F
-F --> G[TTS Conversion]
-G --> H[Speech Output]
+# Terminal 2 — frontend (http://localhost:5173)
+cd frontend
+npm run dev
 ```
+Open `http://localhost:5173` — browse agents as a user, or create an organization account to build your own.
+
+**Production:** `python app.py` runs Flask's own dev server — fine locally, not for deployment. Use Gunicorn instead:
+```bash
+cd backend
+gunicorn -c gunicorn.conf.py app:app
+```
+`gunicorn.conf.py` runs 2 worker processes × 4 threads each (`gthread` worker class — the default `sync` worker ignores `--threads` entirely) with a 120s request timeout, since Gemini replies can take several seconds. Platforms that look for a `Procfile` (Heroku, Render, Railway) will pick this up automatically from `backend/Procfile`.
 
 ---
 
 ## 📂 Project Structure
 ```
 CALL.E/
-├── backend/            # Core AI components
-│   ├── src/            # Source files
-│   │   ├── chains.py   # Conversation workflows
-│   │   ├── models.py   # LLM & Vector Store config
-│   │   ├── tools.py    # Integration tools
-├── frontend/           # User interface
-│   ├── src/
-│   │   └── audio/      # Speech assets
-├── vector_store/       # Knowledge base
-└── wandb/              # Experiment tracking
+├── backend/
+│   ├── app.py                    # Flask app factory
+│   ├── config.py                 # All environment-driven config
+│   ├── gunicorn.conf.py          # Production server config
+│   ├── models/                   # SQLAlchemy models: Company, Agent, Document, Conversation
+│   ├── routes/                   # Blueprints: auth, agent, documents, conversations, company
+│   ├── services/
+│   │   ├── embeddings.py         # BGE embedding model (singleton, thread-safe)
+│   │   ├── chunking.py           # PDF text chunker
+│   │   ├── vector_store.py       # Per-agent FAISS index read/write
+│   │   ├── retrieval.py          # Search + relevance gate
+│   │   ├── llm.py                # Gemini client, multi-key rotation
+│   │   ├── conversation_service.py  # Grounded prompt + reply generation
+│   │   ├── summary.py            # End-of-chat summary generation
+│   │   ├── session_store.py      # Redis session cache
+│   │   └── supabase_storage.py   # PDF upload/download to Supabase Storage
+│   └── vector_embedding/         # FAISS indices, one per agent (gitignored)
+└── frontend/
+    └── src/
+        ├── pages/                # FrontPage, UserWelcome, AgentDetail, Conversation, company/*
+        ├── components/           # Navbar, ProtectedRoute, FormField
+        ├── context/              # AuthContext (JWT)
+        └── api/                  # REST client modules
 ```
 
 ---
 
-## 🏎️ Quick Start Example
-```python
-# Initialize AI agent
-from src.models import get_retriever, create_rag_chain
-
-retriever = get_retriever()
-llm = get_llm()
-agent = create_rag_chain(retriever, llm)
-
-# Start conversation
-response = agent.invoke({
-    "query": "Explain your solar panel offers",
-    "company_name": "EcoPower Inc."
-})
-print(response["result"])
-```
-
----
-
-## 📈 Performance Optimization
-- **Chunking Strategy:** 512-token chunks with 20% overlap
-- **Embedding Model:** all-mpnet-base-v2 (Hugging Face)
-- **Indexing:** Pinecone HNSW with 95%+ recall
-- **Training:** Contrastive learning with 0.0001 lr
-
-![image](https://github.com/user-attachments/assets/90e60d18-2c0b-4af7-8655-73a80e36b0ad)
-
----
-
-## 📊 WandB Integration
-- **WandB Dashboard**
-  - Real-time GPU utilization tracking
-  - Loss curve visualization
-  - Hyperparameter sweeps
-  - Retrieval quality metrics
-
-
-
-![WandB Dashboard](https://github.com/user-attachments/assets/38e2e7df-281e-419a-b7ce-e43f638d856c)
-
----
 ## Conclusion
-
-CALL.E is a breakthrough in AI-powered bulk calling, enhancing large-scale communication with efficiency and precision. With Gemini LLM integration, speech recognition via Google Cloud APIs, retrieval-augmented generation, and real-time performance tracking, CALL.E stands as a premier solution for automated outreach. Its success at NEURATHON 2025 solidifies its impact on AI-driven customer interaction and scalability.
-
+CALL.E is a RAG-grounded knowledge chatbot platform: any organization can stand up an agent scoped to its own documents, and every answer it gives is traceable back to that knowledge base — never invented, never borrowed from the model's general knowledge.

@@ -1,11 +1,10 @@
-audio
+venv
 .venv
 .env
 .idea
 __pycache__
-output.wav
-ngrok.exe
-static
-audio_segment.wav
-neurosphere-453417-a13fa049f648.json
 
+# Runtime-generated data — not source, regenerates from real usage
+conversation_audio/
+documents/
+vector_embedding/
