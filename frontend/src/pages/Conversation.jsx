@@ -12,7 +12,7 @@ import {
   User,
 } from "lucide-react";
 import Navbar from "../components/Navbar";
-import { startConversation, sendMessage, endConversation } from "../api/conversations";
+import { startConversation, sendMessage, endConversation, endConversationBeacon } from "../api/conversations";
 
 // Reveal assistant replies a chunk at a time instead of dumping the whole
 // response at once — the backend returns the full text in one shot, so this
@@ -44,6 +44,7 @@ const Conversation = () => {
   const scrollRef = useRef(null);
   const inputRef = useRef(null);
   const streamIntervalRef = useRef(null);
+  const isEndedRef = useRef(false);
 
   const clearStreamInterval = () => {
     if (streamIntervalRef.current) {
@@ -84,6 +85,29 @@ const Conversation = () => {
   };
 
   useEffect(() => clearStreamInterval, []);
+
+  useEffect(() => {
+    isEndedRef.current = isEnded;
+  }, [isEnded]);
+
+  // A normal API call gets cancelled the instant the tab closes, so if the
+  // user just navigates away instead of clicking "End Chat", the
+  // conversation would otherwise sit "active" in Postgres forever and its
+  // Redis session would silently expire, losing the transcript. sendBeacon
+  // is the one request type browsers guarantee to still deliver on unload.
+  useEffect(() => {
+    const handleUnload = () => {
+      if (!isEndedRef.current) {
+        endConversationBeacon(conversationId);
+      }
+    };
+    window.addEventListener("pagehide", handleUnload);
+    window.addEventListener("beforeunload", handleUnload);
+    return () => {
+      window.removeEventListener("pagehide", handleUnload);
+      window.removeEventListener("beforeunload", handleUnload);
+    };
+  }, [conversationId]);
 
   useEffect(() => {
     let cancelled = false;

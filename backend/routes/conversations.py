@@ -66,6 +66,36 @@ def _finalize_conversation_from_session(conversation, session):
     session_store.delete_session(conversation.id, current_app.config)
 
 
+def _finalize_without_session(conversation):
+    """Mark a conversation completed with no message history to persist —
+    used when its Redis session is already gone (ended, or its 24h TTL
+    expired before anything reached /end, e.g. a closed tab whose
+    end-of-chat beacon never made it out).
+    """
+    conversation.status = "completed"
+    conversation.ended_at = datetime.now(timezone.utc)
+    db.session.commit()
+
+
+def _reconcile_stale_active(conversations):
+    """A conversation whose Redis session no longer exists has no way left
+    to ever reach /end on its own — normally the frontend fires a
+    sendBeacon /end call when the tab closes, but that can fail to arrive
+    (browser crash, no network at unload). Called opportunistically on
+    dashboard reads instead of a scheduled job, so these don't sit
+    "active" forever even when the beacon never lands.
+    """
+    for conversation in conversations:
+        if conversation.status != "active":
+            continue
+        try:
+            session = session_store.get_session(conversation.id, current_app.config)
+        except session_store.SessionStoreError:
+            continue  # Redis down — leave it as-is rather than guess
+        if session is None:
+            _finalize_without_session(conversation)
+
+
 @conversations_bp.route("", methods=["POST"])
 def create_conversation():
     """Public — a user does not need an account to start a conversation.
@@ -235,9 +265,7 @@ def end_conversation(conversation_id):
         else:
             # No Redis session — never started, or its 24h TTL already
             # expired. Nothing to persist beyond marking it ended.
-            conversation.status = "completed"
-            conversation.ended_at = datetime.now(timezone.utc)
-            db.session.commit()
+            _finalize_without_session(conversation)
 
     return jsonify(conversation.to_dict()), 200
 
@@ -254,6 +282,7 @@ def list_conversations():
         .order_by(Conversation.started_at.desc())
         .all()
     )
+    _reconcile_stale_active(conversations)
     return jsonify({"conversations": [c.to_dict() for c in conversations]}), 200
 
 
@@ -268,4 +297,5 @@ def get_conversation(conversation_id):
     if not conversation:
         return jsonify({"error": "Conversation not found"}), 404
 
+    _reconcile_stale_active([conversation])
     return jsonify(conversation.to_dict(include_messages=True)), 200
