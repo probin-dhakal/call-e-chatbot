@@ -8,10 +8,42 @@ os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 from flask import Flask
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager
+from sqlalchemy import inspect, text
+from apscheduler.schedulers.background import BackgroundScheduler
 
 from config import Config
 from models import db
 from services.supabase_storage import ensure_bucket_exists
+
+
+def _upgrade_conversation_schema():
+    """Small additive migration for installations created before activity tracking."""
+    columns = {column["name"] for column in inspect(db.engine).get_columns("conversations")}
+    if "last_activity_at" in columns:
+        return
+    column_type = "TIMESTAMP WITH TIME ZONE" if db.engine.dialect.name == "postgresql" else "DATETIME"
+    db.session.execute(text(f"ALTER TABLE conversations ADD COLUMN last_activity_at {column_type}"))
+    db.session.execute(text(
+        "UPDATE conversations SET last_activity_at = COALESCE(started_at, CURRENT_TIMESTAMP) "
+        "WHERE last_activity_at IS NULL"
+    ))
+    db.session.commit()
+
+
+def _start_conversation_cleanup(app):
+    from routes.conversations import cleanup_inactive_conversations
+
+    scheduler = BackgroundScheduler(daemon=True)
+    scheduler.add_job(
+        cleanup_inactive_conversations,
+        "interval",
+        args=[app],
+        seconds=app.config["CONVERSATION_CLEANUP_INTERVAL_SECONDS"],
+        id="conversation-inactivity-cleanup",
+        replace_existing=True,
+    )
+    scheduler.start()
+    app.extensions["conversation_cleanup_scheduler"] = scheduler
 
 
 def create_app():
@@ -31,7 +63,7 @@ def create_app():
     CORS(app, resources={
         r"/api/*": {
             "origins": app.config["FRONTEND_ORIGINS"],
-            "methods": ["GET", "POST", "OPTIONS"],
+            "methods": ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
             "allow_headers": ["Content-Type", "Authorization"],
             "supports_credentials": True,
         }
@@ -51,6 +83,9 @@ def create_app():
 
     with app.app_context():
         db.create_all()
+        _upgrade_conversation_schema()
+
+    _start_conversation_cleanup(app)
 
     return app
 

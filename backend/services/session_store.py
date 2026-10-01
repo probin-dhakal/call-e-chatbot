@@ -1,5 +1,6 @@
 import json
 import logging
+from datetime import datetime, timezone
 
 from upstash_redis import Redis
 
@@ -61,7 +62,10 @@ def build_session(conversation, agent, company, history=None):
         "agent": serialize_agent(agent),
         "company": serialize_company(company),
         "history": history or [],
-        "metadata": {"stage": conversation.stage},
+        "metadata": {
+            "stage": conversation.stage,
+            "last_activity_at": datetime.now(timezone.utc).isoformat(),
+        },
     }
 
 

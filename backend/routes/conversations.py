@@ -1,6 +1,6 @@
 import json
 import types
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from flask import Blueprint, request, jsonify, current_app
 from flask_jwt_extended import jwt_required
@@ -27,7 +27,7 @@ def _history_as_objects(history):
     return [types.SimpleNamespace(role=m["role"], content=m["content"]) for m in history]
 
 
-def _finalize_conversation_from_session(conversation, session):
+def _finalize_conversation_from_session(conversation, session, status="completed"):
     """Persist a Redis-held session to Postgres (the permanent store) and
     clear the Redis key. Only reached from /end, and — in principle, though
     it never currently fires — from an end-of-call turn in /message. If the
@@ -38,8 +38,9 @@ def _finalize_conversation_from_session(conversation, session):
     for m in history:
         db.session.add(Message(conversation_id=conversation.id, role=m["role"], content=m["content"]))
 
-    conversation.status = "completed"
+    conversation.status = status
     conversation.ended_at = datetime.now(timezone.utc)
+    conversation.last_activity_at = conversation.ended_at
     conversation.stage = session.get("metadata", {}).get("stage", conversation.stage)
 
     try:
@@ -66,14 +67,15 @@ def _finalize_conversation_from_session(conversation, session):
     session_store.delete_session(conversation.id, current_app.config)
 
 
-def _finalize_without_session(conversation):
-    """Mark a conversation completed with no message history to persist —
+def _finalize_without_session(conversation, status="abandoned"):
+    """Close a conversation whose Redis session is already gone —
     used when its Redis session is already gone (ended, or its 24h TTL
     expired before anything reached /end, e.g. a closed tab whose
     end-of-chat beacon never made it out).
     """
-    conversation.status = "completed"
+    conversation.status = status
     conversation.ended_at = datetime.now(timezone.utc)
+    conversation.last_activity_at = conversation.ended_at
     db.session.commit()
 
 
@@ -93,7 +95,56 @@ def _reconcile_stale_active(conversations):
         except session_store.SessionStoreError:
             continue  # Redis down — leave it as-is rather than guess
         if session is None:
-            _finalize_without_session(conversation)
+            _finalize_without_session(conversation, status="abandoned")
+
+
+def _session_last_activity(session, fallback):
+    raw = session.get("metadata", {}).get("last_activity_at") if session else None
+    if raw:
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+    return fallback or datetime.now(timezone.utc)
+
+
+def cleanup_inactive_conversations(app):
+    """Persist and mark chats abandoned after the configured idle timeout.
+
+    Every Gunicorn worker may invoke this job. Row-level locks make a given
+    conversation finalizable by only one worker, preventing duplicate messages.
+    """
+    with app.app_context():
+        cutoff = datetime.now(timezone.utc) - timedelta(
+            seconds=app.config["CONVERSATION_INACTIVITY_TIMEOUT_SECONDS"]
+        )
+        candidates = Conversation.query.filter_by(status="active").all()
+        for candidate in candidates:
+            try:
+                session = session_store.get_session(candidate.id, app.config)
+            except session_store.SessionStoreError:
+                app.logger.warning("Skipping inactivity cleanup while Redis is unavailable")
+                return
+
+            if _session_last_activity(session, candidate.last_activity_at) > cutoff:
+                continue
+
+            # Re-read under a DB lock so concurrent scheduler workers cannot
+            # persist the same Redis transcript twice.
+            conversation = Conversation.query.filter_by(
+                id=candidate.id, status="active"
+            ).with_for_update().first()
+            if not conversation:
+                continue
+            fresh_session = session_store.get_session(conversation.id, app.config)
+            if _session_last_activity(fresh_session, conversation.last_activity_at) > cutoff:
+                db.session.rollback()
+                continue
+            if fresh_session:
+                _finalize_conversation_from_session(conversation, fresh_session, status="abandoned")
+            else:
+                _finalize_without_session(conversation, status="abandoned")
 
 
 @conversations_bp.route("", methods=["POST"])
@@ -153,6 +204,8 @@ def start_conversation(conversation_id):
     company = conversation.company
 
     reply_text = generate_greeting(agent, company)
+    conversation.last_activity_at = datetime.now(timezone.utc)
+    db.session.commit()
 
     new_session = session_store.build_session(
         conversation, agent, company, history=[{"role": "assistant", "content": reply_text}]
@@ -211,6 +264,7 @@ def send_message(conversation_id):
     session["history"].append({"role": "user", "content": user_message})
     session["history"].append({"role": "assistant", "content": reply_text})
     session["metadata"]["stage"] = stage
+    session["metadata"]["last_activity_at"] = datetime.now(timezone.utc).isoformat()
 
     if is_end_of_call:
         # Currently unreachable — generate_agent_reply always returns False
@@ -235,6 +289,31 @@ def send_message(conversation_id):
         "status": "completed" if is_end_of_call else "active",
         "stage": stage,
     }), 200
+
+
+@conversations_bp.route("/<conversation_id>/heartbeat", methods=["POST"])
+def heartbeat_conversation(conversation_id):
+    """Public liveness ping sent by an open chat tab once per minute."""
+    try:
+        session = session_store.get_session(conversation_id, current_app.config)
+    except session_store.SessionStoreError:
+        return jsonify({"error": SESSION_STORE_UNAVAILABLE_MESSAGE}), 503
+    if session is None:
+        return jsonify({"error": SESSION_NOT_FOUND_MESSAGE}), 404
+
+    now = datetime.now(timezone.utc)
+    session.setdefault("metadata", {})["last_activity_at"] = now.isoformat()
+    try:
+        session_store.save_session(conversation_id, session, current_app.config)
+    except session_store.SessionStoreError:
+        return jsonify({"error": SESSION_STORE_UNAVAILABLE_MESSAGE}), 503
+
+    # One write per minute gives cleanup a durable fallback if Redis expires.
+    conversation = Conversation.query.filter_by(id=conversation_id, status="active").first()
+    if conversation:
+        conversation.last_activity_at = now
+        db.session.commit()
+    return jsonify({"status": "active"}), 200
 
 
 @conversations_bp.route("/<conversation_id>/end", methods=["POST"])
@@ -265,7 +344,7 @@ def end_conversation(conversation_id):
         else:
             # No Redis session — never started, or its 24h TTL already
             # expired. Nothing to persist beyond marking it ended.
-            _finalize_without_session(conversation)
+            _finalize_without_session(conversation, status="completed")
 
     return jsonify(conversation.to_dict()), 200
 

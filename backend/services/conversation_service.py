@@ -3,6 +3,9 @@ import re
 
 from services.llm import generate_response
 from services.retrieval import search_agent_knowledge, is_query_relevant
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnableLambda
 
 logger = logging.getLogger(__name__)
 
@@ -192,18 +195,24 @@ def generate_agent_reply(agent, company, user_message, history_messages, user_me
 
     history_text = format_history(history_messages, agent.name, cfg["MAX_HISTORY_MESSAGES"])
 
-    prompt = PROMPT_TEMPLATE.format(
-        agent_name=agent.name,
-        company_name=company.name,
-        agent_role=agent.role,
-        agent_purpose=_agent_purpose(agent),
-        organization_information=agent.organization_values,
-        retrieved_context=retrieved_knowledge,
-        conversation_history=history_text,
-        user_message=user_message,
-    )
-
-    raw_response = generate_response(prompt, cfg["GEMINI_API_KEYS"], cfg["GEMINI_MODEL"])
+    prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
+    # This small LCEL chain keeps the policy prompt explicit while routing
+    # model calls through the application's quota-aware LangChain wrapper.
+    chain = prompt | RunnableLambda(
+        lambda value: generate_response(
+            value.to_string(), cfg["GEMINI_API_KEYS"], cfg["GEMINI_MODEL"]
+        )
+    ) | StrOutputParser()
+    raw_response = chain.invoke({
+        "agent_name": agent.name,
+        "company_name": company.name,
+        "agent_role": agent.role,
+        "agent_purpose": _agent_purpose(agent),
+        "organization_information": agent.organization_values,
+        "retrieved_context": retrieved_knowledge,
+        "conversation_history": history_text,
+        "user_message": user_message,
+    })
     clean_response = _truncate_runaway_reply(raw_response, agent.name)
 
     logger.info("LLM response: %r", clean_response)

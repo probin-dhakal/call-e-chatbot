@@ -55,7 +55,7 @@ const CompanyRegister = () => {
     try {
       await register({ name: form.name.trim(), email: form.email.trim(), password: form.password });
       toast.success("Organization created!");
-      navigate("/company/onboarding", { replace: true });
+      navigate("/company/dashboard", { replace: true });
     } catch (error) {
       const message = error.response?.data?.error || "Could not create your organization";
       toast.error(message);
@@ -93,7 +93,7 @@ const CompanyRegister = () => {
           transition={{ duration: 0.5, delay: 0.15 }}
           className="mt-2 text-center text-slate-500"
         >
-          Set up your organization account to start building your AI agent.
+          Set up your organization account, then create as many AI agents as you need.
         </motion.p>
 
         <motion.form

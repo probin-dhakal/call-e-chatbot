@@ -20,6 +20,11 @@ export const endConversation = async (conversationId) => {
   return data;
 };
 
+export const heartbeatConversation = async (conversationId) => {
+  const { data } = await apiClient.post(`/api/conversations/${conversationId}/heartbeat`);
+  return data;
+};
+
 // Fire-and-forget variant for tab-close/navigation-away — a normal fetch/XHR
 // gets cancelled the instant the page unloads, but sendBeacon is guaranteed
 // by the browser to still deliver the request. Used so a user who just

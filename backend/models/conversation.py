@@ -11,8 +11,9 @@ class Conversation(db.Model):
     company_id = db.Column(db.Integer, db.ForeignKey("companies.id"), nullable=False, index=True)
     agent_id = db.Column(db.Integer, db.ForeignKey("agents.id"), nullable=False, index=True)
     started_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    last_activity_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
     ended_at = db.Column(db.DateTime(timezone=True), nullable=True)
-    status = db.Column(db.String(50), nullable=False, default="active")  # active | completed
+    status = db.Column(db.String(50), nullable=False, default="active")  # active | completed | abandoned
 
     # Fixed placeholder from a pre-pivot sales-stage design — kept only for
     # API/DB shape compatibility, no longer meaningfully used.
@@ -38,6 +39,7 @@ class Conversation(db.Model):
             "agent_id": self.agent_id,
             "agent_name": self.agent.name if self.agent else None,
             "started_at": self.started_at.isoformat() if self.started_at else None,
+            "last_activity_at": self.last_activity_at.isoformat() if self.last_activity_at else None,
             "ended_at": self.ended_at.isoformat() if self.ended_at else None,
             "status": self.status,
             "stage": self.stage,

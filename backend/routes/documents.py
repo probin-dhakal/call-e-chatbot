@@ -1,13 +1,12 @@
 import hashlib
-import io
 from flask import Blueprint, request, jsonify, current_app
 from flask_jwt_extended import jwt_required
 from werkzeug.utils import secure_filename
 from models import db, Document, Agent
 from utils.auth import get_current_company
 from utils.files import unique_stored_filename
-from services.pdf_text import extract_text_from_pdf
-from services.chunking import chunk_text
+from services.pdf_text import load_pdf_documents
+from services.chunking import chunk_documents
 from services.vector_store import add_document_to_index, remove_document_from_index
 from services.supabase_storage import upload_file, download_file, delete_file
 
@@ -30,18 +29,21 @@ def _process_document(document, content_bytes):
     """Run the extract -> chunk -> embed -> FAISS pipeline for one document,
     updating its status in place. Never raises — failures are recorded on
     the document itself so one bad PDF doesn't fail the whole upload batch.
-    Reads straight from in-memory bytes; the PDF is never written to local disk.
+    Uses a short-lived secure temporary file because PyPDFLoader requires a path.
     """
     document.status = "processing"
     db.session.commit()
 
     try:
-        text = extract_text_from_pdf(io.BytesIO(content_bytes))
-        if not text:
+        pages = load_pdf_documents(content_bytes, {
+            "source": document.original_filename,
+            "document_id": document.id,
+        })
+        if not pages:
             raise ValueError("No extractable text found in this PDF")
 
-        chunks = chunk_text(
-            text,
+        chunks = chunk_documents(
+            pages,
             chunk_size=current_app.config["CHUNK_SIZE"],
             chunk_overlap=current_app.config["CHUNK_OVERLAP"],
         )
@@ -135,8 +137,7 @@ def upload_documents():
         db.session.add(document)
         db.session.commit()
 
-        # Process straight from the bytes already in memory — no local disk
-        # round-trip needed for a PDF we just uploaded to Storage.
+        # The loader handles the short-lived temporary file it needs internally.
         _process_document(document, content)
         saved_documents.append(document)
 
@@ -181,7 +182,8 @@ def delete_document(document_id):
     # Rebuild the FAISS index without this document's vectors before
     # touching the DB row, so we never leave orphaned vectors behind.
     remove_document_from_index(
-        current_app.config["VECTOR_FOLDER"], document.company_id, document.agent_id, document.id
+        current_app.config["VECTOR_FOLDER"], document.company_id, document.agent_id, document.id,
+        current_app.config["EMBEDDING_MODEL_NAME"],
     )
 
     try:
@@ -216,7 +218,8 @@ def reprocess_document(document_id):
 
     # Drop any vectors from a previous attempt first so reprocessing never duplicates them.
     remove_document_from_index(
-        current_app.config["VECTOR_FOLDER"], document.company_id, document.agent_id, document.id
+        current_app.config["VECTOR_FOLDER"], document.company_id, document.agent_id, document.id,
+        current_app.config["EMBEDDING_MODEL_NAME"],
     )
 
     _process_document(document, content)

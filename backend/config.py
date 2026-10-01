@@ -69,6 +69,12 @@ class Config:
     UPSTASH_REDIS_REST_URL = os.getenv("UPSTASH_REDIS_REST_URL")
     UPSTASH_REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
     CONVERSATION_SESSION_TTL_SECONDS = 24 * 60 * 60
+    CONVERSATION_INACTIVITY_TIMEOUT_SECONDS = int(
+        os.getenv("CONVERSATION_INACTIVITY_TIMEOUT_SECONDS", str(15 * 60))
+    )
+    CONVERSATION_CLEANUP_INTERVAL_SECONDS = int(
+        os.getenv("CONVERSATION_CLEANUP_INTERVAL_SECONDS", "60")
+    )
 
     RAG_TOP_K = int(os.getenv("RAG_TOP_K", "4"))
     # Empirically measured with BAAI/bge-base-en-v1.5 (see backend/README or

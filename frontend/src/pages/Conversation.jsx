@@ -12,7 +12,7 @@ import {
   User,
 } from "lucide-react";
 import Navbar from "../components/Navbar";
-import { startConversation, sendMessage, endConversation, endConversationBeacon } from "../api/conversations";
+import { startConversation, sendMessage, endConversation, endConversationBeacon, heartbeatConversation } from "../api/conversations";
 
 // Reveal assistant replies a chunk at a time instead of dumping the whole
 // response at once — the backend returns the full text in one shot, so this
@@ -21,6 +21,7 @@ import { startConversation, sendMessage, endConversation, endConversationBeacon 
 // MAX_STREAM_MS instead of crawling.
 const CHAR_INTERVAL_MS = 15;
 const MAX_STREAM_MS = 2200;
+const HEARTBEAT_INTERVAL_MS = 60_000;
 
 const Conversation = () => {
   const { conversationId } = useParams();
@@ -107,6 +108,18 @@ const Conversation = () => {
       window.removeEventListener("pagehide", handleUnload);
       window.removeEventListener("beforeunload", handleUnload);
     };
+  }, [conversationId]);
+
+  // Browser unload events are best-effort. This heartbeat is the durable
+  // signal that an open tab is still using the conversation.
+  useEffect(() => {
+    const heartbeat = () => {
+      if (!isEndedRef.current && document.visibilityState !== "hidden") {
+        heartbeatConversation(conversationId).catch(() => {});
+      }
+    };
+    const interval = window.setInterval(heartbeat, HEARTBEAT_INTERVAL_MS);
+    return () => window.clearInterval(interval);
   }, [conversationId]);
 
   useEffect(() => {
