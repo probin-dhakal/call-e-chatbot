@@ -8,6 +8,5 @@ __pycache__
 .python-version
 
 # Local dev data — production uses a mounted volume instead (see Dockerfile)
-vector_embedding/
 documents/
 conversation_audio/
