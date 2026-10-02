@@ -4,7 +4,7 @@ from models import db, DocumentChunk
 from services.embeddings import get_embedding_model
 
 
-def add_document_to_index(
+def replace_document_chunks(
     company_id,
     agent_id,
     document_id,
@@ -12,8 +12,10 @@ def add_document_to_index(
     model_name,
 ):
     """
-    Generate embeddings for document chunks and store them
-    directly in PostgreSQL using pgvector.
+    Generate new embeddings and replace the document's existing
+    chunks inside the caller's database transaction.
+
+    This function does not commit.
     """
 
     if not documents:
@@ -28,28 +30,37 @@ def add_document_to_index(
         for document in documents
     ]
 
+    # Generate embeddings BEFORE deleting existing chunks.
     embeddings = embedding_model.embed_documents(texts)
 
-    chunks = []
+    new_chunks = []
 
     for index, (document, embedding) in enumerate(
         zip(documents, embeddings)
     ):
-        chunk = DocumentChunk(
-            company_id=company_id,
-            agent_id=agent_id,
-            document_id=document_id,
-            chunk_index=index,
-            chunk_text=document.page_content,
-            embedding=embedding,
+        new_chunks.append(
+            DocumentChunk(
+                company_id=company_id,
+                agent_id=agent_id,
+                document_id=document_id,
+                chunk_index=index,
+                chunk_text=document.page_content,
+                embedding=embedding,
+            )
         )
 
-        chunks.append(chunk)
+    # Only delete old chunks after all embeddings succeeded.
+    DocumentChunk.query.filter_by(
+        document_id=document_id
+    ).delete(
+        synchronize_session=False
+    )
 
-    db.session.add_all(chunks)
-    db.session.commit()
+    db.session.add_all(new_chunks)
 
-    return len(chunks)
+    return len(new_chunks)
+
+
 
 
 def remove_document_from_index(

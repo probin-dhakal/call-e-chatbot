@@ -11,7 +11,7 @@ from utils.files import unique_stored_filename
 from services.pdf_text import load_pdf_documents
 from services.chunking import chunk_documents
 from services.vector_store import (
-    add_document_to_index,
+    replace_document_chunks,
     remove_document_from_index,
 )
 from services.supabase_storage import (
@@ -26,6 +26,7 @@ documents_bp = Blueprint(
     __name__,
     url_prefix="/api/documents",
 )
+
 
 ALLOWED_MIME_TYPES = {"application/pdf"}
 
@@ -69,7 +70,10 @@ def _process_document(
             ↓
         PostgreSQL + pgvector
 
-    The function updates the document status:
+    The document must already be in "processing" status
+    before this function starts.
+
+    On success:
 
         processing → completed
 
@@ -80,7 +84,10 @@ def _process_document(
 
     with app.app_context():
 
-        document = db.session.get(Document, document_id)
+        document = db.session.get(
+            Document,
+            document_id,
+        )
 
         if not document:
             app.logger.error(
@@ -91,12 +98,8 @@ def _process_document(
 
         try:
             # ---------------------------------------------------------
-            # 1. Mark document as processing
+            # 1. Start processing
             # ---------------------------------------------------------
-
-            document.status = "processing"
-            document.error_message = None
-            db.session.commit()
 
             app.logger.info(
                 "Started PDF processing: document_id=%s",
@@ -148,12 +151,12 @@ def _process_document(
             )
 
             # ---------------------------------------------------------
-            # 4. Generate embeddings and store chunks in pgvector
+            # 4. Generate embeddings and replace chunks
             # ---------------------------------------------------------
 
             model_name = app.config["EMBEDDING_MODEL_NAME"]
 
-            chunk_count = add_document_to_index(
+            chunk_count = replace_document_chunks(
                 company_id,
                 agent_id,
                 document_id,
@@ -170,6 +173,17 @@ def _process_document(
             document.chunk_count = chunk_count
             document.error_message = None
 
+            # IMPORTANT:
+            # replace_document_chunks() must NOT commit.
+            #
+            # This commit makes the following operations atomic:
+            #
+            #   - delete old chunks
+            #   - insert new chunks
+            #   - mark document completed
+            #
+            # If anything fails before this commit, rollback will
+            # preserve the previous chunks.
             db.session.commit()
 
             app.logger.info(
@@ -179,6 +193,10 @@ def _process_document(
             )
 
         except Exception as e:
+
+            # ---------------------------------------------------------
+            # Processing failed
+            # ---------------------------------------------------------
 
             # Roll back any failed DB transaction first.
             db.session.rollback()
@@ -384,7 +402,37 @@ def upload_documents():
             daemon=True,
         )
 
-        thread.start()
+        try:
+            thread.start()
+
+        except Exception as e:
+
+            current_app.logger.exception(
+                "Failed to start background processing for document %s",
+                document.id,
+            )
+
+            # If the thread could not start, mark the document
+            # as failed instead of leaving it permanently processing.
+            try:
+                document = db.session.get(
+                    Document,
+                    document.id,
+                )
+
+                if document:
+                    document.status = "failed"
+                    document.error_message = str(e)
+                    db.session.commit()
+
+            except Exception:
+                db.session.rollback()
+
+            rejected_files.append(
+                file.filename
+            )
+
+            continue
 
         # ---------------------------------------------------------
         # 9. Add document to response list
@@ -397,6 +445,7 @@ def upload_documents():
     # -------------------------------------------------------------
 
     if not saved_documents and not duplicate_files:
+
         return jsonify({
             "error": "Only PDF files are allowed",
             "rejected": rejected_files,
@@ -480,6 +529,15 @@ def delete_document(document_id):
         }), 404
 
     # ---------------------------------------------------------
+    # Prevent delete/reprocess race condition
+    # ---------------------------------------------------------
+
+    if document.status == "processing":
+        return jsonify({
+            "error": "Document is currently being processed"
+        }), 409
+
+    # ---------------------------------------------------------
     # Remove document chunks from PostgreSQL + pgvector
     # ---------------------------------------------------------
 
@@ -535,6 +593,10 @@ def reprocess_document(document_id):
             "error": "Company not found"
         }), 404
 
+    # ---------------------------------------------------------
+    # 1. Get document
+    # ---------------------------------------------------------
+
     document = Document.query.filter_by(
         id=document_id,
         company_id=company.id,
@@ -546,7 +608,13 @@ def reprocess_document(document_id):
         }), 404
 
     # ---------------------------------------------------------
-    # Download original PDF from Supabase Storage
+    # 2. Download original PDF from Supabase Storage
+    # ---------------------------------------------------------
+    #
+    # We download the file before claiming the document.
+    #
+    # This avoids leaving the document stuck in "processing"
+    # if the original file is unavailable.
     # ---------------------------------------------------------
 
     try:
@@ -572,58 +640,98 @@ def reprocess_document(document_id):
         }), 404
 
     # ---------------------------------------------------------
-    # Remove existing document chunks
+    # 3. Atomically claim the document for processing
     # ---------------------------------------------------------
 
-    try:
-
-        remove_document_from_index(
-            document.id
+    document = (
+        Document.query
+        .filter_by(
+            id=document_id,
+            company_id=company.id,
         )
+        .with_for_update()
+        .first()
+    )
 
-    except Exception:
+    if not document:
 
-        current_app.logger.exception(
-            "Failed to remove existing chunks for document %s",
-            document.id,
-        )
+        db.session.rollback()
 
         return jsonify({
-            "error": "Failed to remove previous document chunks"
-        }), 500
+            "error": "Document not found"
+        }), 404
 
-    # ---------------------------------------------------------
-    # Mark as processing
-    # ---------------------------------------------------------
+    # Another request may already be processing this document.
+    if document.status == "processing":
 
+        db.session.rollback()
+
+        return jsonify({
+            "error": "Document is already being processed"
+        }), 409
+
+    # Claim the document.
     document.status = "processing"
     document.error_message = None
 
     db.session.commit()
 
     # ---------------------------------------------------------
-    # Start background processing
+    # 4. Start background processing
     # ---------------------------------------------------------
 
-    app = current_app._get_current_object()
+    try:
 
-    thread = threading.Thread(
-        target=_process_document,
-        args=(
+        app = current_app._get_current_object()
+
+        thread = threading.Thread(
+            target=_process_document,
+            args=(
+                document.id,
+                document.company_id,
+                document.agent_id,
+                document.original_filename,
+                content,
+                app,
+            ),
+            daemon=True,
+        )
+
+        thread.start()
+
+    except Exception as e:
+
+        current_app.logger.exception(
+            "Failed to start background processing for document %s",
             document.id,
-            document.company_id,
-            document.agent_id,
-            document.original_filename,
-            content,
-            app,
-        ),
-        daemon=True,
-    )
+        )
 
-    thread.start()
+        # Reset the document if the background thread
+        # could not be started.
+        try:
+
+            document = db.session.get(
+                Document,
+                document_id,
+            )
+
+            if document:
+
+                document.status = "failed"
+                document.error_message = str(e)
+
+                db.session.commit()
+
+        except Exception:
+
+            db.session.rollback()
+
+        return jsonify({
+            "error": "Failed to start document processing"
+        }), 500
 
     # ---------------------------------------------------------
-    # Return immediately
+    # 5. Return immediately
     # ---------------------------------------------------------
 
     return jsonify({
