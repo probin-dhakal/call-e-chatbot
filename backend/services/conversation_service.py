@@ -168,8 +168,11 @@ def generate_agent_reply(agent, company, user_message, history_messages, user_me
     stage = 1
 
     chunks, best_score, index_exists = search_agent_knowledge(
-        cfg["VECTOR_FOLDER"], company.id, agent.id, user_message,
-        cfg["EMBEDDING_MODEL_NAME"], cfg["RAG_TOP_K"],
+        company.id,
+        agent.id,
+        user_message,
+        cfg["EMBEDDING_MODEL_NAME"],
+        cfg["RAG_TOP_K"],
     )
     relevant = is_query_relevant(best_score, index_exists, cfg["RAG_RELEVANCE_THRESHOLD"])
 

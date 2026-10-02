@@ -20,9 +20,16 @@ class Document(db.Model):
     error_message = db.Column(db.Text, nullable=True)
 
     # Populated once the document has been embedded into the agent's FAISS index
-    vector_path = db.Column(db.String(1000), nullable=True)
-    embedding_model = db.Column(db.String(255), nullable=True)
-    chunk_count = db.Column(db.Integer, nullable=True)
+    # Populated once the document has been embedded into pgvector.
+    embedding_model = db.Column(
+        db.String(255),
+        nullable=True,
+    )
+
+    chunk_count = db.Column(
+        db.Integer,
+        nullable=True,
+    )
 
     uploaded_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 

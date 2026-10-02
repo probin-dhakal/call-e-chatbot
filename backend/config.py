@@ -32,7 +32,7 @@ class Config:
     SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_KEY")
     SUPABASE_STORAGE_BUCKET = os.getenv("SUPABASE_STORAGE_BUCKET", "documents")
 
-    VECTOR_FOLDER = os.path.join(BASE_DIR, "vector_embedding")
+    #VECTOR_FOLDER = os.path.join(BASE_DIR, "vector_embedding")
     EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "BAAI/bge-base-en-v1.5")
     CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "500"))
     CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "50"))

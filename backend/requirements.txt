@@ -3,19 +3,21 @@ flask-cors==5.0.1
 Flask-SQLAlchemy==3.1.1
 Flask-JWT-Extended==4.7.1
 psycopg2-binary==2.9.10
+pgvector==0.4.1
+
 python-dotenv==1.0.1
 reportlab==4.3.1
+
 langchain==1.2.10
 langchain-community==0.4.1
 langchain-text-splitters==1.1.0
 langchain-huggingface==1.2.1
 langchain-google-genai==4.2.1
-faiss-cpu==1.15.0
+
 sentence-transformers==6.0.0
 pypdf==6.16.1
 numpy==2.5.2
 supabase==2.31.0
-# langchain-google-genai currently targets the 1.x Google Gen AI SDK.
 google-genai==1.56.0
 upstash-redis==1.7.0
 gunicorn==26.1.0

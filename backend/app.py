@@ -50,7 +50,7 @@ def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
 
-    os.makedirs(app.config["VECTOR_FOLDER"], exist_ok=True)
+    #os.makedirs(app.config["VECTOR_FOLDER"], exist_ok=True)
 
     if app.config["SUPABASE_URL"] and app.config["SUPABASE_SERVICE_KEY"]:
         ensure_bucket_exists(

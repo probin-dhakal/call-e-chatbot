@@ -150,21 +150,20 @@ def _process_document(
 
             model_name = app.config["EMBEDDING_MODEL_NAME"]
 
-            chunk_count, index_path = add_document_to_index(
-                app.config["VECTOR_FOLDER"],
-                company_id,
-                agent_id,
-                document_id,
-                chunks,
-                model_name,
-            )
+            chunk_count = add_document_to_index(
+                        company_id,
+                        agent_id,
+                        document_id,
+                        chunks,
+                        model_name,
+                    )
 
             # ---------------------------------------------------------
             # 5. Mark document as completed
             # ---------------------------------------------------------
 
             document.status = "completed"
-            document.vector_path = index_path
+            
             document.embedding_model = model_name
             document.chunk_count = chunk_count
             document.error_message = None
@@ -484,12 +483,8 @@ def delete_document(document_id):
     # ---------------------------------------------------------
 
     remove_document_from_index(
-        current_app.config["VECTOR_FOLDER"],
-        document.company_id,
-        document.agent_id,
-        document.id,
-        current_app.config["EMBEDDING_MODEL_NAME"],
-    )
+    document.id
+)
 
     # ---------------------------------------------------------
     # Delete PDF from Supabase Storage
@@ -582,12 +577,8 @@ def reprocess_document(document_id):
     try:
 
         remove_document_from_index(
-            current_app.config["VECTOR_FOLDER"],
-            document.company_id,
-            document.agent_id,
-            document.id,
-            current_app.config["EMBEDDING_MODEL_NAME"],
-        )
+    document.id
+)
 
     except Exception:
 
