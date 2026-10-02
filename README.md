@@ -1109,26 +1109,12 @@ https://github.com/probin-dhakal/call-e-chatbot
 
 ---
 
-# ⭐ CALL.E
+---
 
-CALL.E combines:
+## ⭐ Support
 
-```text
-React
-   +
-Flask
-   +
-PostgreSQL
-   +
-pgvector
-   +
-Redis
-   +
-Supabase Storage
-   +
-BGE Embeddings
-   +
-Google Gemini
-```
+If you like this project, consider giving it a ⭐ on GitHub!
 
-to provide a document-grounded AI knowledge-agent platform.
+**[⭐ Star this repository](https://github.com/probin-dhakal/call-e-chatbot)**
+
+---
