@@ -59,80 +59,23 @@ The system is designed as a multi-tenant platform where organization, agent, doc
 
 ## High-Level Architecture
 
-```mermaid
-flowchart TD
+![CALL.E Complete System Architecture](CALL.E%20Complete%20System%20Architecture.png)
 
-    USER["End User"]
+CALL.E follows a modular architecture built around:
 
-    subgraph FRONTEND["Frontend — React + Vite"]
-        PUBLIC["Public Chat UI"]
-        DASHBOARD["Organization Dashboard"]
-    end
+- **React + Vite** — Frontend
+- **Flask** — Backend API
+- **PostgreSQL + pgvector** — Application database and vector search
+- **Supabase Storage** — PDF storage
+- **Upstash Redis** — Active conversation sessions
+- **BGE Embeddings** — Document and query embeddings
+- **Google Gemini** — AI response generation and conversation summaries
 
-    subgraph BACKEND["Backend — Flask API"]
-        AUTH["Auth Routes"]
-        AGENTS["Agent Routes"]
-        DOCUMENTS["Document Routes"]
-        CONVERSATIONS["Conversation Routes"]
-        COMPANY["Company Routes"]
+The complete architecture covers three major workflows:
 
-        subgraph SERVICES["Service Layer"]
-            PDF["PDF Extraction"]
-            CHUNK["Chunking"]
-            EMBED["BGE Embeddings"]
-            VECTOR["Vector Store"]
-            RETRIEVAL["Vector Retrieval"]
-            LLM["Gemini LLM"]
-            SESSION["Redis Session Store"]
-            SUMMARY["Conversation Summary"]
-            STORAGE["Supabase Storage Service"]
-        end
-    end
-
-    PG["PostgreSQL + pgvector"]
-    SUPABASE["Supabase Storage"]
-    REDIS["Upstash Redis"]
-    GEMINI["Google Gemini"]
-
-    USER --> PUBLIC
-
-    PUBLIC -->|"HTTPS / JSON"| CONVERSATIONS
-
-    DASHBOARD -->|"HTTPS / JSON + JWT"| AUTH
-    DASHBOARD -->|"HTTPS / JSON + JWT"| AGENTS
-    DASHBOARD -->|"HTTPS / JSON + JWT"| DOCUMENTS
-    DASHBOARD -->|"HTTPS / JSON + JWT"| COMPANY
-    DASHBOARD -->|"HTTPS / JSON + JWT"| CONVERSATIONS
-
-    AUTH --> PG
-    AGENTS --> PG
-    COMPANY --> PG
-    CONVERSATIONS --> PG
-    CONVERSATIONS --> SESSION
-
-    DOCUMENTS --> STORAGE
-    DOCUMENTS --> PDF
-
-    PDF --> CHUNK
-    CHUNK --> EMBED
-    EMBED --> VECTOR
-    VECTOR --> PG
-
-    CONVERSATIONS --> RETRIEVAL
-    RETRIEVAL --> EMBED
-    RETRIEVAL --> PG
-
-    CONVERSATIONS --> LLM
-    LLM --> GEMINI
-
-    CONVERSATIONS --> SUMMARY
-    SUMMARY --> GEMINI
-
-    SESSION --> REDIS
-    STORAGE --> SUPABASE
-```
-
----
+1. **Document Ingestion** — PDF upload → extraction → chunking → embeddings → PostgreSQL + pgvector
+2. **RAG Pipeline** — User query → query embedding → similarity search → relevant chunks → Gemini → grounded response
+3. **Conversation Management** — Redis for active sessions and PostgreSQL for permanent conversation storage
 
 # 🔄 RAG Architecture
 
