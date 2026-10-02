@@ -32,6 +32,7 @@ ALLOWED_MIME_TYPES = {"application/pdf"}
 
 def _is_pdf(file_storage):
     filename = (file_storage.filename or "").lower()
+
     return (
         filename.endswith(".pdf")
         and file_storage.mimetype in ALLOWED_MIME_TYPES
@@ -64,14 +65,16 @@ def _process_document(
             ↓
         Chunking
             ↓
-        Embeddings
+        BGE embeddings
             ↓
-        FAISS indexing
+        PostgreSQL + pgvector
 
     The function updates the document status:
+
         processing → completed
 
     If anything fails:
+
         processing → failed
     """
 
@@ -145,25 +148,24 @@ def _process_document(
             )
 
             # ---------------------------------------------------------
-            # 4. Create embeddings and add to FAISS
+            # 4. Generate embeddings and store chunks in pgvector
             # ---------------------------------------------------------
 
             model_name = app.config["EMBEDDING_MODEL_NAME"]
 
             chunk_count = add_document_to_index(
-                        company_id,
-                        agent_id,
-                        document_id,
-                        chunks,
-                        model_name,
-                    )
+                company_id,
+                agent_id,
+                document_id,
+                chunks,
+                model_name,
+            )
 
             # ---------------------------------------------------------
             # 5. Mark document as completed
             # ---------------------------------------------------------
 
             document.status = "completed"
-            
             document.embedding_model = model_name
             document.chunk_count = chunk_count
             document.error_message = None
@@ -356,7 +358,6 @@ def upload_documents():
             file_type="pdf",
             file_hash=file_hash,
 
-            # Important:
             # Processing happens asynchronously.
             status="processing",
         )
@@ -479,12 +480,12 @@ def delete_document(document_id):
         }), 404
 
     # ---------------------------------------------------------
-    # Remove vectors from FAISS
+    # Remove document chunks from PostgreSQL + pgvector
     # ---------------------------------------------------------
 
     remove_document_from_index(
-    document.id
-)
+        document.id
+    )
 
     # ---------------------------------------------------------
     # Delete PDF from Supabase Storage
@@ -545,7 +546,7 @@ def reprocess_document(document_id):
         }), 404
 
     # ---------------------------------------------------------
-    # Download original PDF from Supabase
+    # Download original PDF from Supabase Storage
     # ---------------------------------------------------------
 
     try:
@@ -571,24 +572,24 @@ def reprocess_document(document_id):
         }), 404
 
     # ---------------------------------------------------------
-    # Remove old vectors
+    # Remove existing document chunks
     # ---------------------------------------------------------
 
     try:
 
         remove_document_from_index(
-    document.id
-)
+            document.id
+        )
 
     except Exception:
 
         current_app.logger.exception(
-            "Failed to remove old vectors for document %s",
+            "Failed to remove existing chunks for document %s",
             document.id,
         )
 
         return jsonify({
-            "error": "Failed to remove previous document vectors"
+            "error": "Failed to remove previous document chunks"
         }), 500
 
     # ---------------------------------------------------------

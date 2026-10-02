@@ -1,8 +1,8 @@
 import os
 
-# faiss and torch (via sentence-transformers) both bundle their own OpenMP
-# runtime; loading both natively in one process can segfault on macOS unless
-# this is set before either is imported anywhere in the app.
+# PyTorch / sentence-transformers can use OpenMP at runtime.
+# This prevents OpenMP runtime conflicts in environments where
+# multiple OpenMP libraries are loaded.
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
 from flask import Flask
@@ -18,15 +18,36 @@ from services.supabase_storage import ensure_bucket_exists
 
 def _upgrade_conversation_schema():
     """Small additive migration for installations created before activity tracking."""
-    columns = {column["name"] for column in inspect(db.engine).get_columns("conversations")}
+
+    columns = {
+        column["name"]
+        for column in inspect(db.engine).get_columns("conversations")
+    }
+
     if "last_activity_at" in columns:
         return
-    column_type = "TIMESTAMP WITH TIME ZONE" if db.engine.dialect.name == "postgresql" else "DATETIME"
-    db.session.execute(text(f"ALTER TABLE conversations ADD COLUMN last_activity_at {column_type}"))
-    db.session.execute(text(
-        "UPDATE conversations SET last_activity_at = COALESCE(started_at, CURRENT_TIMESTAMP) "
-        "WHERE last_activity_at IS NULL"
-    ))
+
+    column_type = (
+        "TIMESTAMP WITH TIME ZONE"
+        if db.engine.dialect.name == "postgresql"
+        else "DATETIME"
+    )
+
+    db.session.execute(
+        text(
+            f"ALTER TABLE conversations "
+            f"ADD COLUMN last_activity_at {column_type}"
+        )
+    )
+
+    db.session.execute(
+        text(
+            "UPDATE conversations "
+            "SET last_activity_at = COALESCE(started_at, CURRENT_TIMESTAMP) "
+            "WHERE last_activity_at IS NULL"
+        )
+    )
+
     db.session.commit()
 
 
@@ -34,6 +55,7 @@ def _start_conversation_cleanup(app):
     from routes.conversations import cleanup_inactive_conversations
 
     scheduler = BackgroundScheduler(daemon=True)
+
     scheduler.add_job(
         cleanup_inactive_conversations,
         "interval",
@@ -42,32 +64,51 @@ def _start_conversation_cleanup(app):
         id="conversation-inactivity-cleanup",
         replace_existing=True,
     )
+
     scheduler.start()
+
     app.extensions["conversation_cleanup_scheduler"] = scheduler
 
 
 def create_app():
     app = Flask(__name__)
+
     app.config.from_object(Config)
 
-    #os.makedirs(app.config["VECTOR_FOLDER"], exist_ok=True)
-
-    if app.config["SUPABASE_URL"] and app.config["SUPABASE_SERVICE_KEY"]:
+    if (
+        app.config["SUPABASE_URL"]
+        and app.config["SUPABASE_SERVICE_KEY"]
+    ):
         ensure_bucket_exists(
-            app.config["SUPABASE_URL"], app.config["SUPABASE_SERVICE_KEY"], app.config["SUPABASE_STORAGE_BUCKET"]
+            app.config["SUPABASE_URL"],
+            app.config["SUPABASE_SERVICE_KEY"],
+            app.config["SUPABASE_STORAGE_BUCKET"],
         )
 
     db.init_app(app)
+
     JWTManager(app)
 
-    CORS(app, resources={
-        r"/api/*": {
-            "origins": app.config["FRONTEND_ORIGINS"],
-            "methods": ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-            "allow_headers": ["Content-Type", "Authorization"],
-            "supports_credentials": True,
-        }
-    })
+    CORS(
+        app,
+        resources={
+            r"/api/*": {
+                "origins": app.config["FRONTEND_ORIGINS"],
+                "methods": [
+                    "GET",
+                    "POST",
+                    "PATCH",
+                    "DELETE",
+                    "OPTIONS",
+                ],
+                "allow_headers": [
+                    "Content-Type",
+                    "Authorization",
+                ],
+                "supports_credentials": True,
+            }
+        },
+    )
 
     from routes.auth import auth_bp
     from routes.company import company_bp
@@ -91,6 +132,7 @@ def create_app():
 
 
 app = create_app()
+
 
 if __name__ == "__main__":
     app.run(debug=True)
