@@ -181,11 +181,11 @@ The main application tables are:
 
 ## Entity Relationship Diagram
 
-![CALL.E Database Schema](Database%20Schema%20%26%20Relationships%20Diagram%281%29.png)
+![CALL.E Database Schema](Database%20Schema%20%26%20Relationships%20Diagram.png)
 
 > Place the database diagram image in the repository root using the filename:
 >
-> `Database Schema & Relationships Diagram(1).png`
+> `Database Schema & Relationships Diagram.png`
 
 ### Core Relationships
 
