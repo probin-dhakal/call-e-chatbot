@@ -81,23 +81,29 @@ const CompanyOnboarding = () => {
   const addFiles = (fileList) => {
     const incoming = Array.from(fileList);
     const nonPdf = incoming.filter(
-      (f) => f.type !== "application/pdf" && !f.name.toLowerCase().endsWith(".pdf")
+      (f) =>
+        f.type !== "application/pdf" && !f.name.toLowerCase().endsWith(".pdf"),
     );
 
     if (nonPdf.length > 0) {
-      setFileError(`Only PDF files are allowed: ${nonPdf.map((f) => f.name).join(", ")}`);
+      setFileError(
+        `Only PDF files are allowed: ${nonPdf.map((f) => f.name).join(", ")}`,
+      );
       toast.error("Only PDF files are allowed");
     } else {
       setFileError("");
     }
 
     const pdfs = incoming.filter(
-      (f) => f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf")
+      (f) =>
+        f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf"),
     );
 
     setFiles((prev) => {
       const existingKeys = new Set(prev.map((f) => `${f.name}-${f.size}`));
-      const newOnes = pdfs.filter((f) => !existingKeys.has(`${f.name}-${f.size}`));
+      const newOnes = pdfs.filter(
+        (f) => !existingKeys.has(`${f.name}-${f.size}`),
+      );
       return [...prev, ...newOnes];
     });
   };
@@ -121,9 +127,12 @@ const CompanyOnboarding = () => {
     const next = {};
     if (!form.agentName.trim()) next.agentName = "Agent name is required";
     if (!form.agentRole.trim()) next.agentRole = "Agent role is required";
-    if (!form.agentObjective.trim()) next.agentObjective = "Agent objective is required";
-    if (!form.orgValues.trim()) next.orgValues = "Organization values are required";
-    if (!form.conversationPurpose.trim()) next.conversationPurpose = "Conversation purpose is required";
+    if (!form.agentObjective.trim())
+      next.agentObjective = "Agent objective is required";
+    if (!form.orgValues.trim())
+      next.orgValues = "Organization values are required";
+    if (!form.conversationPurpose.trim())
+      next.conversationPurpose = "Conversation purpose is required";
     setErrors(next);
     return Object.keys(next).length === 0;
   };
@@ -147,14 +156,27 @@ const CompanyOnboarding = () => {
 
       toast.success("Agent created successfully!");
 
+      // if (files.length > 0) {
+      //   const uploadResult = await uploadDocuments(agent.id, files);
+      //   notifyUploadResult(uploadResult);
+      // }
       if (files.length > 0) {
-        const uploadResult = await uploadDocuments(agent.id, files);
-        notifyUploadResult(uploadResult);
+        uploadDocuments(agent.id, files)
+          .then((uploadResult) => {
+            notifyUploadResult(uploadResult);
+          })
+          .catch((error) => {
+            toast.error(
+              error.response?.data?.error || "Document upload failed",
+            );
+          });
       }
 
       navigate("/company/dashboard", { replace: true });
     } catch (error) {
-      const message = error.response?.data?.error || "Something went wrong creating your agent";
+      const message =
+        error.response?.data?.error ||
+        "Something went wrong creating your agent";
       toast.error(message);
     } finally {
       setIsSubmitting(false);
@@ -190,8 +212,8 @@ const CompanyOnboarding = () => {
           transition={{ duration: 0.5, delay: 0.1 }}
           className="mt-3 max-w-xl text-slate-500"
         >
-          Provide information about your organization and upload documents
-          so your AI agent can answer questions using your knowledge base.
+          Provide information about your organization and upload documents so
+          your AI agent can answer questions using your knowledge base.
         </motion.p>
 
         {/* Stepper */}
@@ -199,7 +221,10 @@ const CompanyOnboarding = () => {
           {SECTIONS.map((s, i) => {
             const Icon = s.icon;
             return (
-              <div key={s.key} className="flex flex-1 items-center last:flex-none">
+              <div
+                key={s.key}
+                className="flex flex-1 items-center last:flex-none"
+              >
                 <div className="flex flex-col items-center gap-2 sm:flex-row">
                   <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-indigo-200 bg-indigo-50 text-indigo-600">
                     <Icon className="h-3.5 w-3.5" />
@@ -253,7 +278,11 @@ const CompanyOnboarding = () => {
             </Field>
           </SectionCard>
 
-          <SectionCard icon={Building2} index={2} title="Organization Information">
+          <SectionCard
+            icon={Building2}
+            index={2}
+            title="Organization Information"
+          >
             <Field
               label="Organization Information"
               error={errors.orgValues}
@@ -286,10 +315,9 @@ const CompanyOnboarding = () => {
           <SectionCard icon={BookOpen} index={3} title="Knowledge Base">
             <div>
               <p className="mb-3 text-sm text-slate-500">
-                Upload documents containing the information your AI agent
-                should know &mdash; policies, guidelines, FAQs, product
-                information, forms, brochures, or any other reference
-                material.
+                Upload documents containing the information your AI agent should
+                know &mdash; policies, guidelines, FAQs, product information,
+                forms, brochures, or any other reference material.
               </p>
 
               <div
@@ -347,8 +375,12 @@ const CompanyOnboarding = () => {
                         <div className="flex min-w-0 items-center gap-3">
                           <FileText className="h-4.5 w-4.5 shrink-0 text-indigo-500" />
                           <div className="min-w-0">
-                            <p className="truncate text-sm text-slate-800">{file.name}</p>
-                            <p className="text-xs text-slate-500">{formatFileSize(file.size)}</p>
+                            <p className="truncate text-sm text-slate-800">
+                              {file.name}
+                            </p>
+                            <p className="text-xs text-slate-500">
+                              {formatFileSize(file.size)}
+                            </p>
                           </div>
                         </div>
                         <button

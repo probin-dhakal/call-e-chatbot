@@ -23,42 +23,35 @@ const CompanyLogin = () => {
     setErrors((prev) => ({ ...prev, [key]: undefined }));
   };
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
+const handleSubmit = async (e) => {
+  e.preventDefault();
 
-    const next = {};
-    if (!form.email.trim()) next.email = "Email is required";
-    if (!form.password) next.password = "Password is required";
-    setErrors(next);
-    if (Object.keys(next).length > 0) return;
+  const next = {};
+  if (!form.email.trim()) next.email = "Email is required";
+  if (!form.password) next.password = "Password is required";
 
-    setIsSubmitting(true);
-    try {
-      await login(form);
-      toast.success("Welcome back!");
+  setErrors(next);
 
-      const redirectTo = location.state?.from?.pathname;
-      if (redirectTo) {
-        navigate(redirectTo, { replace: true });
-        return;
-      }
+  if (Object.keys(next).length > 0) return;
 
-      // No specific destination requested — send new orgs to onboarding,
-      // returning orgs straight to their dashboard.
-      try {
-        const { agents } = await listAgents();
-        navigate(agents.length > 0 ? "/company/dashboard" : "/company/onboarding", { replace: true });
-      } catch {
-        navigate("/company/dashboard", { replace: true });
-      }
-    } catch (error) {
-      const message = error.response?.data?.error || "Invalid email or password";
-      toast.error(message);
-      setErrors({ password: message });
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
+  setIsSubmitting(true);
+
+  try {
+    await login(form);
+
+    toast.success("Welcome back!");
+
+    navigate("/company/dashboard", { replace: true });
+  } catch (error) {
+    const message =
+      error.response?.data?.error || "Invalid email or password";
+
+    toast.error(message);
+    setErrors({ password: message });
+  } finally {
+    setIsSubmitting(false);
+  }
+};
 
   return (
     <div className="min-h-screen text-slate-900">
