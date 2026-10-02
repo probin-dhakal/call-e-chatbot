@@ -17,7 +17,11 @@ def search_agent_knowledge(
 
     embedding_model = get_embedding_model(model_name)
 
+    # Convert user query into embedding
     query_embedding = embedding_model.embed_query(query)
+
+    # Calculate cosine distance once in PostgreSQL
+    distance = DocumentChunk.embedding.cosine_distance(query_embedding)
 
     query_result = (
         DocumentChunk.query
@@ -25,11 +29,8 @@ def search_agent_knowledge(
             DocumentChunk.company_id == company_id,
             DocumentChunk.agent_id == agent_id,
         )
-        .order_by(
-            DocumentChunk.embedding.cosine_distance(
-                query_embedding
-            )
-        )
+        .add_columns(distance.label("distance"))
+        .order_by(distance)
         .limit(top_k)
         .all()
     )
@@ -39,14 +40,8 @@ def search_agent_knowledge(
 
     chunks = []
 
-    for chunk in query_result:
-        distance = float(
-            chunk.embedding.cosine_distance(
-                query_embedding
-            )
-        )
-
-        similarity = 1.0 - distance
+    for chunk, distance_value in query_result:
+        similarity = 1.0 - float(distance_value)
 
         chunks.append({
             "chunk_text": chunk.chunk_text,
