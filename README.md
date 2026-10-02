@@ -1,393 +1,1191 @@
-CALL.E is a platform for creating and chatting with AI knowledge agents. An organization signs up, creates an agent (name, role, purpose, organization info), and uploads its PDFs — those documents are chunked and embedded into a private, per-agent knowledge base. A user picks that agent and chats with it by typing. Every answer is grounded strictly in what the index retrieves plus the organization's own stated information, under 15 explicit anti-fabrication rules. Postgres is the permanent record; Redis holds only the conversation currently in progress; Gunicorn serves it all in production.
+# CALL.E
+
+CALL.E is a platform for creating and chatting with AI knowledge agents.
+
+An organization can create an AI agent, define its purpose and organizational information, and upload PDF documents that become the agent's private knowledge base. Users can then select an agent and chat with it.
+
+CALL.E uses a Retrieval-Augmented Generation (RAG) pipeline where:
+
+- PDFs are stored in Supabase Storage.
+- PDF text is extracted and split into chunks.
+- Chunks are converted into embeddings using `BAAI/bge-base-en-v1.5`.
+- Embeddings and chunk text are stored in PostgreSQL using `pgvector`.
+- Relevant chunks are retrieved using cosine similarity.
+- Google Gemini generates the final response using retrieved knowledge, configured organization information, and conversation history.
+- Redis stores the active conversation session so normal chat messages do not need to repeatedly load conversation state from PostgreSQL.
+
+The system is designed as a multi-tenant platform where organization, agent, document, and conversation data remain isolated.
 
 ---
 
-## 🌟 Key Features
-- **📚 Per-agent knowledge base:** Upload PDFs, they're chunked and embedded into an isolated FAISS index — one agent's knowledge never leaks into another's
-- **🎯 Strictly grounded answers:** The agent answers only from retrieved knowledge + its configured organization info, explicitly says when the knowledge base doesn't cover something, and never fabricates facts (dates, IDs, contact info, procedures) to fill a gap
-- **💬 Real-time chat UI:** Text conversation with a typewriter reveal
-- **🏢 Multi-tenant by design:** Any number of organizations, each with any number of agents, each with its own isolated documents and conversations
-- **📊 Organization dashboard:** Manage agents, documents, and review past conversations with auto-generated summaries
-- **⚡ Redis-backed active sessions:** A live conversation runs entirely off Redis — Postgres is touched once at the start and once at the end, not on every message
+# 🌟 Key Features
+
+- **📚 Per-agent knowledge base**  
+  Upload PDF documents for an agent. Documents are chunked, embedded, and stored in PostgreSQL + pgvector with `company_id`, `agent_id`, and `document_id` isolation.
+
+- **🎯 Grounded AI responses**  
+  The agent answers using retrieved document knowledge, configured organization information, and conversation history.
+
+- **🧠 RAG with pgvector**  
+  Query embeddings are compared against stored document embeddings using PostgreSQL cosine similarity search.
+
+- **⚡ Fast active sessions with Redis**  
+  Active conversation state is kept in Upstash Redis, avoiding repeated PostgreSQL conversation queries during normal chat.
+
+- **🏢 Multi-tenant architecture**  
+  Multiple organizations can create multiple agents, documents, and conversations while keeping knowledge scoped by organization and agent.
+
+- **📄 Async PDF processing**  
+  PDF processing happens in a background thread so upload requests return quickly while extraction, chunking, embedding, and vector insertion continue asynchronously.
+
+- **🔁 Document reprocessing**  
+  Existing PDFs can be reprocessed from Supabase Storage.
+
+- **🗑️ Document deletion**  
+  Deleting a document removes its stored PDF and associated pgvector chunks.
+
+- **🔐 JWT authentication**  
+  Organization management routes are protected using JWT authentication.
+
+- **📊 Organization dashboard**  
+  Manage agents, documents, and conversations from a centralized dashboard.
+
+- **💬 Public AI-agent chat**  
+  End users can browse active agents and start conversations without creating an organization account.
 
 ---
 
-## 🛠️ Tech Stack
-| Layer                 | Technology                                                        |
-|------------------------|--------------------------------------------------------------------|
-| **Frontend**           | React 18 + Vite, Tailwind CSS v4, React Router, Framer Motion      |
-| **Backend**            | Flask (Python), served by Gunicorn in production                   |
-| **Database**           | PostgreSQL (Supabase)                                              |
-| **File storage**       | Supabase Storage (private bucket for uploaded PDFs)                |
-| **LLM**                | Google Gemini, via the `google-genai` SDK directly (no LangChain)  |
-| **Embeddings**         | `BAAI/bge-base-en-v1.5` via `sentence-transformers`                |
-| **Vector search**      | FAISS (`IndexFlatIP`), one index per agent                         |
-| **Session cache**      | Upstash Redis — holds the active conversation, not Postgres        |
+# 🏗️ System Architecture
 
----
-
-## 01 · Full System Map
+## High-Level Architecture
 
 ```mermaid
-graph TD
-    subgraph Clients
-        UI[User chat UI<br/>FrontPage · UserWelcome · AgentDetail · Conversation]
-        DASH[Organization dashboard<br/>Onboarding · Dashboard · Conversations - JWT]
+flowchart TD
+
+    USER["End User"]
+
+    subgraph FRONTEND["Frontend — React + Vite"]
+        PUBLIC["Public Chat UI"]
+        DASHBOARD["Organization Dashboard"]
     end
 
-    subgraph API["Flask API — routes/ (behind Gunicorn: 2 workers × 4 threads)"]
-        AUTH["/api/auth"]
-        AGENTS["/api/agents"]
-        DOCS["/api/documents"]
-        CONVOS["/api/conversations"]
-        COMPANY["/api/company"]
+    subgraph BACKEND["Backend — Flask API"]
+        AUTH["Auth Routes"]
+        AGENTS["Agent Routes"]
+        DOCUMENTS["Document Routes"]
+        CONVERSATIONS["Conversation Routes"]
+        COMPANY["Company Routes"]
+
+        subgraph SERVICES["Service Layer"]
+            PDF["PDF Extraction"]
+            CHUNK["Chunking"]
+            EMBED["BGE Embeddings"]
+            VECTOR["Vector Store"]
+            RETRIEVAL["Vector Retrieval"]
+            LLM["Gemini LLM"]
+            SESSION["Redis Session Store"]
+            SUMMARY["Conversation Summary"]
+            STORAGE["Supabase Storage Service"]
+        end
     end
 
-    subgraph Services["Service layer"]
-        RAG["RAG<br/>embeddings.py · chunking.py<br/>vector_store.py · retrieval.py"]
-        LLM["LLM<br/>llm.py · conversation_service.py · summary.py"]
-        CACHE["Session cache<br/>session_store.py"]
-    end
+    PG["PostgreSQL + pgvector"]
+    SUPABASE["Supabase Storage"]
+    REDIS["Upstash Redis"]
+    GEMINI["Google Gemini"]
 
-    FAISS[(FAISS index files<br/>vector_embedding/company_id/agent_id/)]
-    GEMINI[(Google Gemini<br/>gemini-3.5-flash-lite, up to 10 keys retried)]
-    REDIS[(Upstash Redis<br/>conversation:id)]
-    PG[(PostgreSQL + Supabase Storage<br/>permanent store)]
+    USER --> PUBLIC
 
-    UI -->|HTTPS/JSON| API
-    DASH -->|HTTPS/JSON + JWT| API
-    CONVOS --> RAG
-    CONVOS --> LLM
-    CONVOS --> CACHE
-    DOCS --> RAG
-    RAG --> FAISS
-    LLM --> GEMINI
-    CACHE --> REDIS
+    PUBLIC -->|"HTTPS / JSON"| CONVERSATIONS
+
+    DASHBOARD -->|"HTTPS / JSON + JWT"| AUTH
+    DASHBOARD -->|"HTTPS / JSON + JWT"| AGENTS
+    DASHBOARD -->|"HTTPS / JSON + JWT"| DOCUMENTS
+    DASHBOARD -->|"HTTPS / JSON + JWT"| COMPANY
+    DASHBOARD -->|"HTTPS / JSON + JWT"| CONVERSATIONS
+
     AUTH --> PG
     AGENTS --> PG
-    DOCS --> PG
     COMPANY --> PG
-    CONVOS -.->|/start once, /end once| PG
+    CONVERSATIONS --> PG
+    CONVERSATIONS --> SESSION
+
+    DOCUMENTS --> STORAGE
+    DOCUMENTS --> PDF
+
+    PDF --> CHUNK
+    CHUNK --> EMBED
+    EMBED --> VECTOR
+    VECTOR --> PG
+
+    CONVERSATIONS --> RETRIEVAL
+    RETRIEVAL --> EMBED
+    RETRIEVAL --> PG
+
+    CONVERSATIONS --> LLM
+    LLM --> GEMINI
+
+    CONVERSATIONS --> SUMMARY
+    SUMMARY --> GEMINI
+
+    SESSION --> REDIS
+    STORAGE --> SUPABASE
 ```
 
-Requests flow top to bottom. Every service is reachable from the API layer above it; only the store beneath a service is the one it actually talks to — the RAG layer never touches Postgres, and the LLM layer never touches FAISS files directly.
+---
+
+# 🔄 RAG Architecture
+
+The knowledge pipeline uses PostgreSQL + pgvector.
+
+```mermaid
+flowchart LR
+
+    A["PDF Upload"] --> B["Supabase Storage"]
+
+    B --> C["PDF Text Extraction"]
+    C --> D["Chunking"]
+
+    D --> E["BGE Embedding Model"]
+    E --> F["PostgreSQL + pgvector"]
+
+    Q["User Question"] --> G["Query Embedding"]
+    G --> F
+
+    F --> H["Cosine Similarity Search"]
+    H --> I["Top-K Relevant Chunks"]
+
+    I --> J["Grounded Prompt"]
+    J --> K["Google Gemini"]
+    K --> L["Final Answer"]
+```
+
+The vector database is not a collection of local FAISS files.
+
+Document chunks and their 768-dimensional embeddings are stored directly in PostgreSQL using pgvector.
 
 ---
 
-## 02 · Frontend
+# 🗄️ Database Schema
 
-React 18 + Vite, Tailwind CSS v4, React Router, Framer Motion. Two audiences share one app: anonymous end users chatting with agents, and authenticated organizations managing them.
+CALL.E uses PostgreSQL as the permanent data store.
 
-| Route | Component | Audience | Purpose |
-|---|---|---|---|
-| `/` | **FrontPage** | Public | Landing page, entry points to both audiences. |
-| `/user` | **UserWelcome** | Public | Browse active agents (`GET /api/agents/public`). |
-| `/user/agent/:agentId` | **AgentDetail** | Public | Agent profile; "Start Chat" creates a conversation row. |
-| `/user/conversation/:id` | **Conversation** | Public | Chat UI — message bubbles, typewriter reveal, text input only. |
-| `/company/login` · `/register` | **Login / Register** | Org | JWT auth, token kept in `localStorage`. |
-| `/company/onboarding` | **Onboarding** | Org, protected | Create an agent + upload its first PDFs in one form. |
-| `/company/dashboard` | **Dashboard** | Org, protected | Agents, documents, recent conversations at a glance. |
-| `/company/conversations[/:id]` | **Conversations / Detail** | Org, protected | Full conversation list + transcript + summary. |
+The main application tables are:
 
-**Support layer:**
-- `context/AuthContext.jsx` — bootstraps from a stored JWT via `GET /me` on load; exposes `login/register/logout`.
-- `components/ProtectedRoute.jsx` — redirects to login when `isAuthenticated` is false.
-- `api/*.js` — one module per resource over a shared Axios instance (`api/axios.js`) that attaches the JWT.
+- `companies`
+- `agents`
+- `documents`
+- `document_chunks`
+- `conversations`
+- `messages`
 
----
+## Entity Relationship Diagram
 
-## 03 · Backend / API
+![CALL.E Database Schema](Database%20Schema%20%26%20Relationships%20Diagram%281%29.png)
 
-Flask app factory (`app.py`) registers five blueprints and creates tables on boot. Every route that acts on behalf of an organization requires a JWT; every route a chatting end user hits is intentionally public — there's no user account in this system, only agents and conversations.
+> Place the database diagram image in the repository root using the filename:
+>
+> `Database Schema & Relationships Diagram(1).png`
 
-| Blueprint | Prefix | Auth | Endpoints |
-|---|---|---|---|
-| auth | `/api/auth` | — | `POST /register`, `POST /login`, `GET /me` (JWT) |
-| agent | `/api/agents` | Mixed | `POST /`, `GET /`, `PATCH /:id` (JWT) · `GET /public`, `GET /public/:id` (open) |
-| documents | `/api/documents` | JWT | `POST /upload`, `GET /`, `DELETE /:id`, `POST /:id/reprocess` |
-| conversations | `/api/conversations` | Mixed | `POST /`, `POST /:id/start`, `POST /:id/message`, `POST /:id/end` (open) · `GET /`, `GET /:id` (JWT) |
-| company | `/api/company` | JWT | `GET /dashboard` |
+### Core Relationships
 
-`utils/auth.py`'s `get_current_company()` is the only source of truth for "who is calling" — routes never trust a client-supplied `company_id`.
+```text
+Company
+ ├── has many Agents
+ ├── has many Documents
+ └── has many Conversations
 
----
+Agent
+ ├── belongs to Company
+ ├── has many Documents
+ └── has many Conversations
 
-## 04 · Data Model
+Document
+ ├── belongs to Company
+ ├── belongs to Agent
+ └── has many DocumentChunks
 
-Four tables in Postgres. `Conversation.stage` and `lead_status` are historical column names from before the sales-agent → knowledge-agent pivot — kept to avoid a migration, now holding generic values (see [Dormant & removed](#13--dormant--removed)).
+DocumentChunk
+ ├── belongs to Document
+ ├── stores company_id
+ ├── stores agent_id
+ └── stores 768-dimensional embedding
 
-| Table | Key columns | Notes |
-|---|---|---|
-| `companies` | `id, name, email (unique), password_hash` | An organization account. |
-| `agents` | `id, company_id → companies, name, role, objective, organization_values, conversation_purpose, is_active` | One agent's identity + knowledge scope, entirely free text. |
-| `documents` | `id, company_id, agent_id, file_hash (dedup), status, vector_path, chunk_count` | `status`: uploaded → processing → completed \| failed. |
-| `conversations` | `id (uuid), company_id, agent_id, status, stage, summary (json), sentiment, lead_status` | `status`: active \| completed. Messages only land here at `/end` — see [Session cache](#07--session-cache). |
-| `messages` | `id, conversation_id → conversations, role, content, created_at` | role: user \| assistant \| system. |
+Conversation
+ ├── belongs to Company
+ ├── belongs to Agent
+ └── has many Messages
 
----
+Message
+ └── belongs to Conversation
+```
 
-## 05 · RAG Pipeline
+## Main Tables
 
-Every agent's knowledge lives in its own FAISS index on disk — never merged, never shared. Retrieval never talks to the LLM; the LLM never talks to FAISS. `conversation_service.py` is the only thing that sees both.
-
-- **`services/embeddings.py`** — `BAAI/bge-base-en-v1.5` via `sentence-transformers`, loaded once per process behind a `threading.Lock`. Without the lock, concurrent first-requests on a multi-threaded worker can race and crash loading the model at once (found under load testing, fixed).
-- **`services/chunking.py`** — word-boundary splitter, 500-char chunks with 50-char overlap so context survives a chunk boundary.
-- **`services/vector_store.py`** — per-agent `IndexFlatIP` at `vector_embedding/company_<id>/agent_<id>/`. Deletes rebuild the index via `reconstruct()` since Flat indexes have no native delete-by-id.
-- **`services/retrieval.py`** — top-`k` (default 4) cosine search, then a 0.48 threshold decides "answerable" vs "off-topic" before the LLM is even called.
-
-> The relevance gate is a pure float comparison against `RAG_RELEVANCE_THRESHOLD` — empirically set at 0.48 (on-topic scored 0.53–0.63, off-topic 0.34–0.48 in testing). An agent with *no* documents uploaded yet is treated as always-relevant, so it can still answer from its configured role/purpose rather than refusing everything.
-
----
-
-## 06 · LLM Layer
-
-Google Gemini, called directly through the raw `google-genai` SDK — no LangChain. One model handles both live replies and the end-of-chat summary.
-
-### Strictly grounded prompt
-`conversation_service.PROMPT_TEMPLATE` enforces 15 explicit rules:
-
-1. Answer only from retrieved knowledge, explicit organization info, and conversation history.
-2. Retrieved knowledge is the *authoritative* source for organization-specific facts.
-3. Never fill a gap with general/world knowledge.
-4. Never guess or fabricate URLs, phone numbers, addresses, IDs, dates, deadlines, eligibility, amounts, policies, or any org-specific fact.
-5. If the knowledge base doesn't cover the question, say so explicitly.
-6. No unsolicited next-steps or suggestions unless the retrieved knowledge supports them.
-7. Refuse an unsupported personal-data question (e.g. "what's my beneficiary ID") plainly — no invented workaround procedure.
-8. Distinguish document facts from anything requiring external/personal data not present.
-9. Domain-adjacent isn't licence to use general knowledge — still grounded-only.
-10. Partial answers are fine; say plainly which part isn't determinable.
-11. Never mention RAG, FAISS, embeddings, retrieval, or internal implementation.
-12. Stay inside the agent's configured purpose.
-13. Redirect unrelated questions to what the agent actually covers.
-14. Concise, natural answers — bullets/numbered steps when the source material has multiple parts.
-15. Absence of information is meaningful — an unsupported claim is not made, ever.
-
-Retrieved knowledge, organization info, conversation history, and the user's question are each wrapped in their own XML-style tag inside the prompt, so the model can't confuse one input for another.
-
-### Resilience — strong multi-key retry
-
-| Mechanism | What it does |
+| Table | Purpose |
 |---|---|
-| Up to 10 keys | `GEMINI_API_KEY_1` through `_10` (plus a bare `GEMINI_API_KEY` for back-compat), deduplicated. Rotation starts from whichever key last worked, not always key 1. |
-| 3 attempts per key | Any failure — 429 quota, 5xx, or a raw network/timeout exception — retries the *same* key up to 3 times with backoff (1.5s, 3s) before moving to the next key. |
-| Full rotation | Cycles through every configured key (up to 30 total attempts across 10 keys) before finally raising the last error. |
-| Thread-safe index | The shared "last working key" pointer is guarded by a `threading.Lock` — closes a race that existed when this was a bare global under concurrent gunicorn threads. |
-| `thinking_budget=512` | Caps hidden reasoning on Gemini's "thinking" models — without it, latency was 14–46s and variable. |
-| Fake-turn truncation | Regex guard that trims a response only if a blank line is followed by `User:` or the agent's own name + colon — catches hallucinated dialogue continuations without clipping legitimate bullet-point answers. |
-
-**Model:** `gemini-3.5-flash-lite` by default — ~1–1.5s per reply, versus ~15–20s on the "thinking" `gemini-3.6-flash`. Gemini 2.5 (all variants) 404s on this API project as deprecated for new users.
+| `companies` | Organization accounts and authentication information |
+| `agents` | AI agent identity, role, objective, organization information, and purpose |
+| `documents` | Uploaded PDF metadata, hash, processing status, and storage information |
+| `document_chunks` | Chunked document text plus 768-dimensional pgvector embeddings |
+| `conversations` | Conversation metadata and lifecycle information |
+| `messages` | Persisted user, assistant, and system messages |
 
 ---
 
-## 07 · Session Cache
+## `document_chunks`
 
-The single biggest structural decision in the backend: an *active* conversation lives entirely in Redis. Postgres is read once, at the very start, and written once, at the very end.
+The `document_chunks` table is the core of the RAG database.
 
-| Key | Shape | TTL |
-|---|---|---|
-| `conversation:<id>` | `{ conversation_id, agent_id, company_id, agent{}, company{}, history[], metadata{stage} }` | 24h, refreshed on every write |
+Important columns:
 
-**Lifecycle:**
-- **`/start`** reads the conversation + agent + company from Postgres once, builds the session object, writes it to Redis.
-- **`/message`** touches *only* Redis — GET, run RAG + Gemini, append both turns, SET (which also refreshes the TTL). No Postgres query happens on this path at all; if the Redis session is missing (never started, ended, or expired), the endpoint returns a clean error rather than silently reconstructing state from Postgres.
-- **`/end`** reads the Redis history, writes every message plus a generated summary to Postgres, and only then deletes the Redis key — if the Postgres write fails, the Redis session is left in place so nothing is lost.
-
-> **Measured effect:** 8 Postgres round-trips per message → 0. Warm `/message` latency went from ~29.8s (an earlier, slower model) to ~1.2s once the model swap and the Redis migration both landed.
-
----
-
-## 08 · Production Deployment
-
-Flask's own dev server (`python app.py`) is fine locally; production runs behind Gunicorn.
-
-```python
-# backend/gunicorn.conf.py
-worker_class = "gthread"   # sync (the default) silently ignores --threads
-workers = 2
-threads = 4
-timeout = 120               # Gemini replies can take several seconds
-bind = "0.0.0.0:$PORT"      # defaults to 5000
+```text
+id            BIGINT
+company_id    INTEGER
+agent_id      INTEGER
+document_id   INTEGER
+chunk_index   INTEGER
+chunk_text    TEXT
+embedding     VECTOR(768)
+created_at    TIMESTAMP
 ```
 
-Start it with `gunicorn -c gunicorn.conf.py app:app` from `backend/`, or via `backend/Procfile` — picked up automatically by Heroku, Render, and Railway. `app.py` itself is untouched; Gunicorn just imports the same `app = create_app()` object the dev server uses.
+The embedding model currently used by the application is:
 
-> **Known local-only caveat:** under synthetic stress testing (many brand-new conversations hitting a freshly-booted worker at the exact same instant), a deeper macOS-specific crash surfaced — PyTorch's BLAS/OpenMP thread-pool initializing unsafely as the first thing inside a freshly-forked worker process (a documented class of Apple Accelerate + `fork()` bug, distinct from the embeddings race already fixed above). Standard mitigations only partially resolved it on this dev machine; it was not verified to reproduce on Linux, which is the actual deployment target and uses a different, more fork-tolerant BLAS stack. Worth a synchronized-burst test on the real deployment target before trusting it under launch-day load — or switch `worker_class` to `sync` with more worker processes instead of threads to sidestep the whole class of bug.
+```text
+BAAI/bge-base-en-v1.5
+```
+
+Embedding dimension:
+
+```text
+768
+```
 
 ---
 
-## 09 · Flow — Document Ingestion
+# 📚 Document Processing Pipeline
 
-Runs once per uploaded PDF, triggered from Onboarding or the dashboard's upload control.
+A document uploaded through the dashboard follows this pipeline:
 
 ```mermaid
-graph LR
-    A[PDF upload] -->|sha256 dedup| B[Supabase Storage<br/>private bucket]
-    B --> C[Extract text<br/>pypdf]
-    C --> D[Chunk<br/>500 / 50 overlap]
-    D --> E[Embed<br/>BGE]
-    E --> F[Agent's FAISS index<br/>append, never overwrite<br/>status: completed]
+flowchart LR
+
+    A["User Uploads PDF"]
+        --> B["Validate PDF"]
+
+    B --> C["Calculate SHA-256"]
+
+    C --> D{"Duplicate?"}
+
+    D -->|Yes| E["Return Duplicate"]
+    D -->|No| F["Upload PDF to Supabase Storage"]
+
+    F --> G["Create Document Record"]
+    G --> H["Status = processing"]
+
+    H --> I["Background Processing"]
+
+    I --> J["Extract Text"]
+    J --> K["Chunk Documents"]
+    K --> L["Generate BGE Embeddings"]
+    L --> M["Insert Document Chunks into PostgreSQL + pgvector"]
+
+    M --> N["Update chunk_count"]
+    N --> O["Status = completed"]
+
+    I -. failure .-> P["Status = failed"]
 ```
 
-A hash of the file's bytes is checked against already-processed documents for this agent first, so re-uploading the same PDF is a no-op rather than a duplicate.
+## Processing Steps
 
----
+### 1. PDF Validation
 
-## 10 · Flow — A Live Chat Turn
+Only PDF uploads are accepted.
 
-The path every `/message` call takes once a conversation is active. Postgres never appears on this path — that's the point.
+The application validates:
 
-```mermaid
-graph LR
-    A[User question] --> B["Redis GET<br/>~70ms"]
-    B --> C["BGE + FAISS<br/>~20–90ms warm"]
-    C --> D["Gemini generate<br/>~1–1.5s, retried"]
-    D --> E["Redis SET<br/>append + refresh TTL"]
-    E --> F[Response]
-
-    G[("PostgreSQL<br/>untouched on this path")]
-    B -.- G
+```text
+.pdf extension
++
+application/pdf MIME type
 ```
 
-Postgres is only read (once) at `/start` and only written (once) at `/end` — measured at zero queries during the block above, via direct SQL instrumentation.
+### 2. Duplicate Detection
 
----
+A SHA-256 hash of the uploaded file is generated.
 
-## 11 · External Services
+The system checks whether the same completed document already exists for the same agent.
 
-| Service | Role | Configured in |
-|---|---|---|
-| Supabase Postgres | Permanent store — companies, agents, documents, conversations, messages. | `DATABASE_URL` |
-| Supabase Storage | Original uploaded PDFs, private bucket, service-role key only. | `SUPABASE_URL`, `SUPABASE_KEY` |
-| Google Gemini | Live replies + end-of-chat summaries, via `google-genai`, up to 10 rotating keys. | `GEMINI_API_KEY_1..._10`, `GEMINI_MODEL` |
-| Upstash Redis | Active conversation session cache, REST API (no persistent connection). | `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` |
+This prevents accidental duplicate ingestion.
 
----
+### 3. Supabase Storage
 
-## 12 · Configuration Reference
+The original PDF is stored in Supabase Storage.
 
-Everything reads from `backend/config.py`, which loads `.env`. Key tuning knobs:
+The storage path follows the organization and agent structure:
+
+```text
+company_<company_id>/agent_<agent_id>/<stored_filename>
+```
+
+### 4. PDF Extraction
+
+Text is extracted from the PDF.
+
+### 5. Chunking
+
+The extracted text is split into smaller chunks.
+
+Default configuration:
 
 ```env
-# RAG tuning
-RAG_TOP_K=4
-RAG_RELEVANCE_THRESHOLD=0.48          # on-topic scored 0.53–0.63 in testing, off-topic 0.34–0.48
 CHUNK_SIZE=500
 CHUNK_OVERLAP=50
-MAX_HISTORY_MESSAGES=12
-
-# LLM
-GEMINI_MODEL=gemini-3.5-flash-lite
-GEMINI_API_KEY_1 ... GEMINI_API_KEY_10  # each retried 3x, then rotates to the next
-
-# Session cache
-CONVERSATION_SESSION_TTL_SECONDS=86400  # 24h, refreshed on every message
-
-# Production
-PORT=5000                               # gunicorn.conf.py binds 0.0.0.0:$PORT
 ```
 
-See `.env.example` for the complete list with explanations for every variable.
+The overlap helps preserve context across chunk boundaries.
+
+### 6. Embedding Generation
+
+Every chunk is converted into a vector using:
+
+```text
+BAAI/bge-base-en-v1.5
+```
+
+Embeddings are normalized before storage.
+
+### 7. pgvector Storage
+
+Each chunk is stored in:
+
+```text
+document_chunks
+```
+
+along with:
+
+```text
+company_id
+agent_id
+document_id
+chunk_index
+chunk_text
+embedding
+```
 
 ---
 
-## 13 · Dormant & Removed
+# 🔎 Retrieval Pipeline
 
-A short, deliberate list of what's intentionally kept around but unused — everything else was deleted outright, not just left dormant.
+When a user asks a question:
 
-| Item | Status | Why |
-|---|---|---|
-| `conversation_stage.py`, `tools.py` | deleted | Dormant sales-stage logic from before the pivot, zero references anywhere — removed rather than left on disk. |
-| Groq / `langchain-groq` | dormant | Config and package still kept, not called by any active route — Gemini is the only active LLM. |
-| `Conversation.stage`, `.lead_status` | repurposed | Column names predate the pivot; `stage` is a fixed placeholder, `lead_status` now stores "resolution status" — kept to avoid a schema migration. |
-| `is_end_of_call` | always false | A knowledge chat only ends when the user/org ends it — never because the model decided to "hang up". |
-| Local `documents/` folder, old CLI prototypes | deleted | Superseded by Supabase Storage; unreferenced by any active code. |
+```mermaid
+flowchart LR
+
+    A["User Question"]
+        --> B["Generate Query Embedding"]
+
+    B --> C["PostgreSQL + pgvector"]
+
+    C --> D["Filter by company_id + agent_id"]
+
+    D --> E["Cosine Distance"]
+
+    E --> F["Order by Similarity"]
+
+    F --> G["Top-K Chunks"]
+
+    G --> H{"Relevance Threshold"}
+
+    H -->|Relevant| I["Gemini"]
+    H -->|Not Relevant| J["Grounded Fallback Response"]
+```
+
+The retrieval query is scoped by:
+
+```text
+company_id
++
+agent_id
+```
+
+This ensures that one agent does not retrieve chunks belonging to another agent.
+
+Current retrieval configuration:
+
+```env
+RAG_TOP_K=4
+RAG_RELEVANCE_THRESHOLD=0.48
+```
+
+Similarity is calculated from PostgreSQL cosine distance:
+
+```text
+similarity = 1 - cosine_distance
+```
 
 ---
 
-## 🚀 Getting Started
+# 🤖 LLM Layer
 
-### Prerequisites
+Google Gemini is used for response generation.
+
+The application calls Gemini through the configured LLM service.
+
+The retrieved document context, organization information, conversation history, and current user question are passed into the grounded prompt.
+
+## Grounding Rules
+
+The agent is instructed to:
+
+1. Answer only from retrieved knowledge, organization information, and conversation history.
+2. Treat retrieved organization knowledge as authoritative.
+3. Never fill missing information using unsupported knowledge.
+4. Never guess organization-specific URLs, phone numbers, addresses, IDs, dates, deadlines, amounts, eligibility rules, procedures, or policies.
+5. Explicitly say when the available knowledge does not contain enough information.
+6. Avoid unsupported recommendations or next steps.
+7. Avoid inventing personal information.
+8. Distinguish document information from information requiring external or personal data.
+9. Remain grounded even when a question is related to the organization's domain.
+10. Provide only the supported part of a partially answerable question.
+11. Avoid exposing internal implementation details.
+12. Stay within the agent's configured purpose.
+13. Redirect unrelated questions back to the agent's supported scope.
+14. Keep responses concise and natural.
+15. Treat missing information as meaningful instead of guessing.
+
+---
+
+# 💬 Conversation Architecture
+
+An active conversation uses Redis as its temporary session store.
+
+```mermaid
+sequenceDiagram
+
+    participant U as User
+    participant API as Flask API
+    participant PG as PostgreSQL
+    participant R as Upstash Redis
+    participant V as pgvector
+    participant G as Gemini
+
+    U->>API: Start conversation
+    API->>PG: Load conversation + agent + company
+    PG-->>API: Data
+    API->>R: Create session
+    R-->>API: Session created
+    API-->>U: Conversation started
+
+    U->>API: Send message
+    API->>R: GET conversation session
+    R-->>API: Active session
+
+    API->>V: Query relevant document chunks
+    V-->>API: Top-K chunks
+
+    API->>G: Grounded prompt + retrieved knowledge
+    G-->>API: AI response
+
+    API->>R: Update session + history
+    R-->>API: Saved
+
+    API-->>U: AI response
+
+    U->>API: End conversation
+    API->>R: Read final session
+    R-->>API: Conversation history
+
+    API->>G: Generate summary
+    G-->>API: Summary
+
+    API->>PG: Persist messages + summary
+    PG-->>API: Saved
+
+    API->>R: Delete active session
+```
+
+## Session Lifecycle
+
+### Start Conversation
+
+Loads the required conversation, agent, and company information from PostgreSQL and creates a Redis session.
+
+### Send Message
+
+Reads the active session from Redis.
+
+Then:
+
+```text
+Redis
+  ↓
+Query Embedding
+  ↓
+pgvector Retrieval
+  ↓
+Grounded Prompt
+  ↓
+Gemini
+  ↓
+Redis Update
+  ↓
+Response
+```
+
+Normal message handling does not need to reconstruct the conversation from PostgreSQL.
+
+### End Conversation
+
+The final Redis session is read, persisted to PostgreSQL, summarized, and then removed from Redis.
+
+PostgreSQL remains the permanent source of record.
+
+---
+
+# 🌐 API Structure
+
+## Authentication
+
+```text
+POST /api/auth/register
+POST /api/auth/login
+GET  /api/auth/me
+```
+
+## Agents
+
+```text
+POST  /api/agents
+GET   /api/agents
+PATCH /api/agents/:id
+
+GET   /api/agents/public
+GET   /api/agents/public/:id
+```
+
+## Documents
+
+```text
+POST   /api/documents/upload
+GET    /api/documents
+DELETE /api/documents/:id
+POST   /api/documents/:id/reprocess
+```
+
+## Conversations
+
+```text
+POST /api/conversations
+POST /api/conversations/:id/start
+POST /api/conversations/:id/message
+POST /api/conversations/:id/end
+
+GET /api/conversations
+GET /api/conversations/:id
+```
+
+## Company
+
+```text
+GET /api/company/dashboard
+```
+
+Organization management endpoints use JWT authentication.
+
+---
+
+# 🖥️ Frontend
+
+The frontend is built with:
+
+- React 18
+- Vite
+- Tailwind CSS
+- React Router
+- Framer Motion
+- Axios
+- React Hot Toast
+- React Toastify
+- Lucide React
+
+## Main Routes
+
+| Route | Purpose |
+|---|---|
+| `/` | Landing page |
+| `/user` | Browse active agents |
+| `/user/agent/:agentId` | View agent information |
+| `/user/conversation/:id` | Public chat interface |
+| `/company/login` | Organization login |
+| `/company/register` | Organization registration |
+| `/company/onboarding` | Create agent and upload documents |
+| `/company/dashboard` | Manage agents and documents |
+| `/company/conversations` | View conversations |
+| `/company/conversations/:id` | View conversation details |
+
+---
+
+# 📂 Project Structure
+
+```text
+CALL.E/
+│
+├── backend/
+│   ├── app.py
+│   ├── config.py
+│   ├── gunicorn.conf.py
+│   ├── Procfile
+│   ├── requirements.txt
+│   │
+│   ├── models/
+│   │   ├── __init__.py
+│   │   ├── company.py
+│   │   ├── agent.py
+│   │   ├── document.py
+│   │   ├── document_chunk.py
+│   │   └── conversation.py
+│   │
+│   ├── routes/
+│   │   ├── auth.py
+│   │   ├── agent.py
+│   │   ├── company.py
+│   │   ├── documents.py
+│   │   └── conversations.py
+│   │
+│   ├── services/
+│   │   ├── embeddings.py
+│   │   ├── chunking.py
+│   │   ├── pdf_text.py
+│   │   ├── vector_store.py
+│   │   ├── retrieval.py
+│   │   ├── llm.py
+│   │   ├── conversation_service.py
+│   │   ├── summary.py
+│   │   ├── session_store.py
+│   │   └── supabase_storage.py
+│   │
+│   └── utils/
+│       ├── auth.py
+│       └── files.py
+│
+├── frontend/
+│   ├── package.json
+│   ├── vite.config.js
+│   └── src/
+│       ├── api/
+│       ├── components/
+│       ├── context/
+│       ├── pages/
+│       └── ...
+│
+├── Database Schema & Relationships Diagram(1).png
+│
+└── README.md
+```
+
+---
+
+# 🛠️ Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Frontend | React 18, Vite |
+| Styling | Tailwind CSS |
+| Animation | Framer Motion |
+| Routing | React Router |
+| HTTP Client | Axios |
+| Backend | Flask |
+| ORM | Flask-SQLAlchemy |
+| Authentication | Flask-JWT-Extended |
+| Database | PostgreSQL |
+| Vector Database | pgvector |
+| PDF Processing | pypdf |
+| Chunking | LangChain text utilities |
+| Embeddings | `BAAI/bge-base-en-v1.5` |
+| LLM | Google Gemini |
+| Session Store | Upstash Redis |
+| File Storage | Supabase Storage |
+| Production Server | Gunicorn |
+| Containerization | Docker |
+| Deployment | Cloud/Docker compatible |
+
+---
+
+# ⚙️ Configuration
+
+The backend reads environment variables from:
+
+```text
+backend/.env
+```
+
+Example:
+
+```env
+# Database
+DATABASE_URL=postgresql://...
+
+# JWT
+JWT_SECRET_KEY=your-secret-key
+
+# Supabase
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_KEY=your-service-role-key
+SUPABASE_STORAGE_BUCKET=documents
+
+# Embeddings
+EMBEDDING_MODEL_NAME=BAAI/bge-base-en-v1.5
+
+# RAG
+RAG_TOP_K=4
+RAG_RELEVANCE_THRESHOLD=0.48
+CHUNK_SIZE=500
+CHUNK_OVERLAP=50
+
+# Gemini
+GEMINI_API_KEY=...
+GEMINI_API_KEY_1=...
+GEMINI_API_KEY_2=...
+GEMINI_MODEL=gemini-3.5-flash-lite
+
+# Redis
+UPSTASH_REDIS_REST_URL=https://...
+UPSTASH_REDIS_REST_TOKEN=...
+
+# Conversation
+CONVERSATION_INACTIVITY_TIMEOUT_SECONDS=900
+
+# Frontend
+FRONTEND_ORIGINS=http://localhost:5173
+
+# Server
+PORT=5000
+```
+
+---
+
+# 🚀 Getting Started
+
+## Prerequisites
+
+Install:
+
 - Python 3.12+
 - Node.js 18+
-- A [Google Gemini API key](https://aistudio.google.com/apikey) (or several — see §06)
-- A [Supabase](https://supabase.com/) project (Postgres + Storage)
-- An [Upstash Redis](https://upstash.com/) database (REST API)
+- PostgreSQL / Supabase
+- Supabase Storage
+- Upstash Redis
+- Google Gemini API key
 
-### Installation
+---
+
+## 1. Clone the Repository
+
 ```bash
-# Clone repository
-git clone https://github.com/yourusername/CALL.E.git
-cd CALL.E
+git clone https://github.com/probin-dhakal/call-e-chatbot.git
+cd call-e-chatbot
+```
 
-# Backend setup
+---
+
+## 2. Backend Setup
+
+```bash
 cd backend
-python3 -m venv venv
-source venv/bin/activate      # Windows: venv\Scripts\activate
-pip install -r requirements.txt
 
-# Frontend setup
-cd ../frontend
+python3 -m venv venv
+source venv/bin/activate
+```
+
+Windows:
+
+```bash
+venv\Scripts\activate
+```
+
+Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+---
+
+## 3. Configure Environment Variables
+
+Create:
+
+```text
+backend/.env
+```
+
+Add your:
+
+- PostgreSQL connection string
+- JWT secret
+- Supabase credentials
+- Gemini API key(s)
+- Upstash Redis credentials
+- Frontend origin
+
+---
+
+## 4. Frontend Setup
+
+Open another terminal:
+
+```bash
+cd frontend
 npm install
 ```
 
-### ⚙️ Configuration
-In `backend/`, copy `.env.example` to `.env` and fill in your keys:
-```sh
-cp .env.example .env
-```
-See `.env.example` for the full list (Gemini, Supabase, Upstash Redis, JWT secret, RAG tuning) and what each one is for.
+---
 
-### ▶️ Running it
+# ▶️ Running Locally
+
+## Start Backend
+
 ```bash
-# Terminal 1 — backend (http://127.0.0.1:5000)
 cd backend
 source venv/bin/activate
 python app.py
+```
 
-# Terminal 2 — frontend (http://localhost:5173)
+Backend:
+
+```text
+http://127.0.0.1:5000
+```
+
+## Start Frontend
+
+```bash
 cd frontend
 npm run dev
 ```
-Open `http://localhost:5173` — browse agents as a user, or create an organization account to build your own.
 
-**Production:** use Gunicorn (see §08 above) instead of `python app.py`:
+Frontend:
+
+```text
+http://localhost:5173
+```
+
+---
+
+# 🐳 Docker
+
+The backend includes a Dockerfile for containerized deployment.
+
+Build:
+
+```bash
+cd backend
+docker build -t call-e-backend .
+```
+
+Run:
+
+```bash
+docker run -p 5000:5000 --env-file .env call-e-backend
+```
+
+The embedding model can be loaded into the container so the application does not need to download the model repeatedly after startup.
+
+Because vectors are stored in PostgreSQL + pgvector, the application does not require a local FAISS index volume.
+
+---
+
+# ☁️ Production Deployment
+
+The backend uses Gunicorn in production.
+
+Example:
+
 ```bash
 cd backend
 gunicorn -c gunicorn.conf.py app:app
 ```
 
----
+The frontend can be deployed as a Vite application on platforms such as Vercel.
 
-## 📂 Project Structure
-```
-CALL.E/
-├── backend/
-│   ├── app.py                    # Flask app factory
-│   ├── config.py                 # All environment-driven config
-│   ├── gunicorn.conf.py          # Production server config
-│   ├── Procfile                  # Deployment start command (Heroku/Render/Railway)
-│   ├── models/                   # SQLAlchemy models: Company, Agent, Document, Conversation
-│   ├── routes/                   # Blueprints: auth, agent, documents, conversations, company
-│   ├── services/
-│   │   ├── embeddings.py         # BGE embedding model (singleton, thread-safe)
-│   │   ├── chunking.py           # PDF text chunker
-│   │   ├── vector_store.py       # Per-agent FAISS index read/write
-│   │   ├── retrieval.py          # Search + relevance gate
-│   │   ├── llm.py                # Gemini client, multi-key retry + rotation
-│   │   ├── conversation_service.py  # 15-rule grounded prompt + reply generation
-│   │   ├── summary.py            # End-of-chat summary generation
-│   │   ├── session_store.py      # Redis session cache
-│   │   └── supabase_storage.py   # PDF upload/download to Supabase Storage
-│   └── vector_embedding/         # FAISS indices, one per agent (gitignored)
-└── frontend/
-    └── src/
-        ├── pages/                # FrontPage, UserWelcome, AgentDetail, Conversation, company/*
-        ├── components/           # Navbar, ProtectedRoute, FormField
-        ├── context/              # AuthContext (JWT)
-        └── api/                  # REST client modules
-```
+The backend can be deployed using Docker or a Python-compatible cloud service.
 
 ---
 
-## Conclusion
-CALL.E is a RAG-grounded knowledge chatbot platform: any organization can stand up an agent scoped to its own documents, and every answer it gives is traceable back to that knowledge base — never invented, never borrowed from the model's general knowledge.
+# 🔐 Multi-Tenant Data Isolation
+
+CALL.E is designed around organization and agent scoping.
+
+Document chunks contain:
+
+```text
+company_id
+agent_id
+document_id
+```
+
+Retrieval filters by both:
+
+```text
+company_id
++
+agent_id
+```
+
+Therefore, a query for one agent only searches the knowledge associated with that organization and agent.
+
+The backend also derives the authenticated organization from the JWT rather than trusting a client-provided `company_id`.
+
+---
+
+# 📄 Document Lifecycle
+
+Documents move through the following states:
+
+```text
+uploaded
+   ↓
+processing
+   ↓
+completed
+```
+
+If processing fails:
+
+```text
+processing
+   ↓
+failed
+```
+
+The document record stores information including:
+
+```text
+file_hash
+status
+error_message
+embedding_model
+chunk_count
+uploaded_at
+```
+
+---
+
+# 🔁 Reprocessing
+
+Existing documents can be reprocessed using:
+
+```text
+POST /api/documents/:id/reprocess
+```
+
+The original PDF is downloaded from Supabase Storage and sent through the ingestion pipeline again.
+
+The frontend provides a reprocess action for documents that are in `completed` or `failed` states.
+
+---
+
+# 🗑️ Document Deletion
+
+Deleting a document performs the following operations:
+
+```text
+1. Remove document chunks from PostgreSQL
+2. Remove the original PDF from Supabase Storage
+3. Remove the document record
+```
+
+---
+
+# 🧠 Embedding Model
+
+CALL.E currently uses:
+
+```text
+BAAI/bge-base-en-v1.5
+```
+
+Configuration:
+
+```text
+Embedding dimension: 768
+Normalization: enabled
+```
+
+The application caches the embedding model at the process level and protects first-time initialization using a thread lock.
+
+---
+
+# 📈 Performance Architecture
+
+The application separates permanent data from short-lived conversation state.
+
+```text
+Permanent Data
+     │
+     └── PostgreSQL
+          ├── companies
+          ├── agents
+          ├── documents
+          ├── document_chunks
+          ├── conversations
+          └── messages
+
+Temporary Active-Session Data
+     │
+     └── Redis
+          └── conversation:<id>
+```
+
+The main chat path is:
+
+```mermaid
+flowchart LR
+
+    A["User Message"]
+        --> B["Redis GET"]
+
+    B --> C["Generate Query Embedding"]
+
+    C --> D["PostgreSQL + pgvector"]
+
+    D --> E["Top-K Context"]
+
+    E --> F["Gemini"]
+
+    F --> G["Redis SET"]
+
+    G --> H["Response"]
+```
+
+This avoids loading a local vector index from disk for each chat request and keeps vector search inside the PostgreSQL data layer.
+
+---
+
+# 🛡️ Reliability Features
+
+The project includes several defensive mechanisms:
+
+- JWT-protected organization APIs
+- Organization-scoped database queries
+- SHA-256 document deduplication
+- Background document processing
+- Document processing status tracking
+- Document error reporting
+- Redis session TTL
+- Redis session error handling
+- Gemini API-key rotation and retry logic
+- Thread-safe embedding model initialization
+- CORS configuration
+- Private Supabase Storage for uploaded PDFs
+
+---
+
+# 🔭 Future Improvements
+
+Possible future improvements include:
+
+- PostgreSQL vector index tuning such as HNSW for larger knowledge bases
+- Safer transactional document reprocessing
+- Backend locking for simultaneous reprocess requests
+- Background job workers instead of in-process Python threads
+- Better document versioning
+- Streaming Gemini responses
+- RAG evaluation datasets and automated retrieval benchmarks
+- Observability and metrics
+- Rate limiting
+- More advanced document parsers for tables and scanned PDFs
+
+---
+
+# 📌 Important Architectural Notes
+
+### PostgreSQL is the permanent source of truth
+
+PostgreSQL stores:
+
+```text
+Companies
+Agents
+Documents
+Document Chunks
+Conversations
+Messages
+```
+
+### Supabase Storage stores the original PDFs
+
+The PDFs themselves are not stored inside PostgreSQL.
+
+### pgvector stores embeddings
+
+Embeddings are stored directly inside:
+
+```text
+document_chunks.embedding
+```
+
+using:
+
+```text
+VECTOR(768)
+```
+
+### Redis is temporary session state
+
+Redis stores active conversations while they are in progress.
+
+It is not the permanent source of truth.
+
+### Gemini generates the final answer
+
+Gemini receives the retrieved context and generates the response under the application's grounding rules.
+
+---
+
+# 📜 License
+
+This project is intended for educational, experimental, and development purposes.
+
+---
+
+# 👨‍💻 Author
+
+**Probin Dhakal**
+
+GitHub:
+
+https://github.com/probin-dhakal
+
+Repository:
+
+https://github.com/probin-dhakal/call-e-chatbot
+
+---
+
+# ⭐ CALL.E
+
+CALL.E combines:
+
+```text
+React
+   +
+Flask
+   +
+PostgreSQL
+   +
+pgvector
+   +
+Redis
+   +
+Supabase Storage
+   +
+BGE Embeddings
+   +
+Google Gemini
+```
+
+to provide a document-grounded AI knowledge-agent platform.
